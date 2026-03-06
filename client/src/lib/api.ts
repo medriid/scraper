@@ -4,7 +4,7 @@ const BASE = "/api";
 
 export async function fetchModels(): Promise<{
   models: ModelOption[];
-  keyStatus: { gemini: number; openrouter: number };
+  keyStatus: { gemini: number; openrouter: number; groq: number };
 }> {
   const res = await fetch(`${BASE}/models`);
   if (!res.ok) throw new Error("Failed to fetch models");
@@ -23,14 +23,18 @@ export function startAgentSession(
   onStep: (step: import("../types").AgentStep) => void,
   onCodeChunk: (chunk: string) => void,
   onDone: (sessionId: string | null) => void,
-  onError: (message: string) => void
+  onError: (message: string) => void,
+  token?: string
 ): () => void {
   let cancelled = false;
 
   const run = async () => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
     const res = await fetch(`${BASE}/scraper/start`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ websiteUrl, instructions, modelId }),
     });
 

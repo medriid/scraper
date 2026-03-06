@@ -5,13 +5,14 @@ import type { ModelOption, SessionConfig } from "../types";
 
 interface Props {
   models: ModelOption[];
-  keyStatus: { gemini: number; openrouter: number };
+  keyStatus: { gemini: number; openrouter: number; groq: number };
   onStart: (config: SessionConfig) => void;
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
   gemini: "Gemini API",
   openrouter: "OpenRouter",
+  groq: "Groq",
 };
 
 export default function ConfigForm({ models, keyStatus, onStart }: Props) {
@@ -26,13 +27,14 @@ export default function ConfigForm({ models, keyStatus, onStart }: Props) {
   // Group models by provider
   const geminiModels = models.filter((m) => m.provider === "gemini");
   const openrouterModels = models.filter((m) => m.provider === "openrouter");
+  const groqModels = models.filter((m) => m.provider === "groq");
 
   const selectedModelInfo = models.find((m) => m.id === selectedModel);
   const canSubmit =
     websiteUrl.trim().length > 0 &&
     instructions.trim().length >= 5 &&
     selectedModel.length > 0 &&
-    (keyStatus.gemini > 0 || keyStatus.openrouter > 0);
+    (keyStatus.gemini > 0 || keyStatus.openrouter > 0 || keyStatus.groq > 0);
 
   function validateUrl(val: string) {
     try {
@@ -109,7 +111,8 @@ export default function ConfigForm({ models, keyStatus, onStart }: Props) {
             <div className="panel-title">AI Model</div>
             <div className="panel-subtitle">
               {keyStatus.gemini} Gemini key{keyStatus.gemini !== 1 ? "s" : ""} ·{" "}
-              {keyStatus.openrouter} OpenRouter key{keyStatus.openrouter !== 1 ? "s" : ""}
+              {keyStatus.openrouter} OpenRouter key{keyStatus.openrouter !== 1 ? "s" : ""} ·{" "}
+              {keyStatus.groq} Groq key{keyStatus.groq !== 1 ? "s" : ""}
             </div>
           </div>
         </div>
@@ -136,7 +139,7 @@ export default function ConfigForm({ models, keyStatus, onStart }: Props) {
 
         {/* OpenRouter models */}
         {openrouterModels.length > 0 && (
-          <div>
+          <div style={{ marginBottom: "var(--space-lg)" }}>
             <div style={{ fontSize: "0.75rem", color: "var(--text-4)", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "var(--space-sm)" }}>
               {PROVIDER_LABELS.openrouter}
             </div>
@@ -154,10 +157,30 @@ export default function ConfigForm({ models, keyStatus, onStart }: Props) {
           </div>
         )}
 
+        {/* Groq models */}
+        {groqModels.length > 0 && (
+          <div>
+            <div style={{ fontSize: "0.75rem", color: "var(--text-4)", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "var(--space-sm)" }}>
+              {PROVIDER_LABELS.groq}
+            </div>
+            <div className="model-grid">
+              {groqModels.map((m) => (
+                <ModelCard
+                  key={m.id}
+                  model={m}
+                  selected={selectedModel === m.id}
+                  disabled={!m.available}
+                  onSelect={() => m.available && setSelectedModel(m.id)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* No keys notice */}
-        {keyStatus.gemini === 0 && keyStatus.openrouter === 0 && (
+        {keyStatus.gemini === 0 && keyStatus.openrouter === 0 && keyStatus.groq === 0 && (
           <p className="error-msg" style={{ marginTop: "var(--space-md)" }}>
-            No API keys configured. Set GEMINI_API_KEY_1 or OPENROUTER_API_KEY_1 in your .env file.
+            No API keys configured. Set GEMINI_API_KEY_1, OPENROUTER_API_KEY_1, or GROQ_API_KEY_1 in your .env file.
           </p>
         )}
 

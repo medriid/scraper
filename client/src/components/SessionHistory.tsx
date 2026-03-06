@@ -12,14 +12,17 @@ interface HistorySession {
 
 interface Props {
   onClose: () => void;
+  token?: string;
 }
 
-export default function SessionHistory({ onClose }: Props) {
+export default function SessionHistory({ onClose, token }: Props) {
   const [sessions, setSessions] = useState<HistorySession[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/scraper/sessions")
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    fetch("/api/scraper/sessions", { headers })
       .then((r) => r.json())
       .then((d) => setSessions(d.sessions ?? []))
       .catch(console.warn)

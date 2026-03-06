@@ -1,7 +1,7 @@
 export interface ModelOption {
   id: string;
   name: string;
-  provider: "gemini" | "openrouter";
+  provider: "gemini" | "openrouter" | "groq";
   free: boolean;
   contextWindow: string;
   description: string;

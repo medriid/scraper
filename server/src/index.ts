@@ -20,7 +20,7 @@ app.use(
         scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", "data:", "blob:"],
-        connectSrc: ["'self'", "https://openrouter.ai", "https://generativelanguage.googleapis.com"],
+        connectSrc: ["'self'", "https://openrouter.ai", "https://generativelanguage.googleapis.com", "https://*.supabase.co", "https://*.googleapis.com"],
         fontSrc: ["'self'", "data:"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],

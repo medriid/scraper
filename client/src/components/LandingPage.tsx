@@ -199,6 +199,49 @@ const HOW_IT_WORKS = [
   { step: "04", title: "Code Streams", desc: "A complete TypeScript scraper with Playwright streams live to your screen, ready to run." },
 ];
 
+// ─── Ticker & Showcase data ───────────────────────────────────────────────────
+
+const TICKER_ITEMS = [
+  "Playwright", "TypeScript", "Gemini 2.5 Pro", "DeepSeek R1",
+  "Claude 3.5", "Qwen 2.5", "JSON Schema", "Supabase",
+  "OpenRouter", "Rate Limiting", "Auto Retry", "Agentic AI",
+];
+
+const SHOWCASE_PANELS = [
+  {
+    num: "01 / 04",
+    tag: "AI Agent",
+    title: "Agentic\nPipeline",
+    desc: "The AI autonomously plans, analyses, and executes a multi-step research process before writing a single line of code.",
+    glyph: "⬡",
+    lines: ["Inspect site structure", "Detect anti-scrape layers", "Design JSON schema", "Refine instructions"],
+  },
+  {
+    num: "02 / 04",
+    tag: "Multi-Model",
+    title: "30+\nAI Models",
+    desc: "Switch between Gemini 2.5 Pro, Flash, DeepSeek, Qwen, Claude, and more — with automatic rate-limit failover.",
+    glyph: "⌬",
+    lines: ["Gemini 2.5 Pro", "DeepSeek R1", "Claude 3.5 Sonnet", "Qwen 2.5 Max"],
+  },
+  {
+    num: "03 / 04",
+    tag: "Real-time",
+    title: "Live\nStreaming",
+    desc: "Watch every token stream to your screen in real time. See the AI think, plan, and code — step by step.",
+    glyph: "◎",
+    lines: ["Agent thinking…", "Analysing DOM…", "Writing scraper…", "Complete ✓"],
+  },
+  {
+    num: "04 / 04",
+    tag: "TypeScript",
+    title: "Production\nCode",
+    desc: "Output is a fully typed TypeScript Playwright scraper with pagination, retries, and error handling included.",
+    glyph: "◈",
+    lines: ["export interface Data {", "  title: string;", "  price: number;", "}"],
+  },
+];
+
 // ─── Landing Page component ───────────────────────────────────────────────────
 
 export default function LandingPage({ onEnterApp }: { onEnterApp: () => void }) {
@@ -207,6 +250,8 @@ export default function LandingPage({ onEnterApp }: { onEnterApp: () => void }) 
   const featuresRef = useRef<HTMLElement>(null);
   const howRef = useRef<HTMLElement>(null);
   const ctaRef = useRef<HTMLElement>(null);
+  const showcaseRef = useRef<HTMLElement>(null);
+  const scrollTrackRef = useRef<HTMLDivElement>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const { user, signOut } = useAuth();
 
@@ -268,6 +313,24 @@ export default function LandingPage({ onEnterApp }: { onEnterApp: () => void }) 
           },
         }
       );
+    }
+
+    // Horizontal scroll showcase
+    if (showcaseRef.current && scrollTrackRef.current) {
+      const track = scrollTrackRef.current;
+      gsap.to(track, {
+        x: () => -(track.scrollWidth - window.innerWidth),
+        ease: "none",
+        scrollTrigger: {
+          trigger: showcaseRef.current,
+          start: "top top",
+          end: () => `+=${track.scrollWidth - window.innerWidth}`,
+          pin: true,
+          scrub: 1,
+          anticipatePin: 1,
+          invalidateOnRefresh: true,
+        },
+      });
     }
 
     return () => {
@@ -368,8 +431,8 @@ export default function LandingPage({ onEnterApp }: { onEnterApp: () => void }) 
                 <button className="hero-btn-primary" onClick={() => setAuthOpen(true)}>
                   Start scraping free
                 </button>
-                <button className="hero-btn-ghost" onClick={onEnterApp}>
-                  Try without account →
+                <button className="hero-btn-ghost" onClick={() => setAuthOpen(true)}>
+                  Sign in →
                 </button>
               </>
             )}
@@ -385,6 +448,56 @@ export default function LandingPage({ onEnterApp }: { onEnterApp: () => void }) 
             <div className="scroll-line" />
           </motion.div>
         </motion.div>
+      </section>
+
+      {/* ── Ticker strip ────────────────────────────────────────────────────── */}
+      <div className="ticker-strip">
+        <div className="ticker-track">
+          {[...TICKER_ITEMS, ...TICKER_ITEMS].map((item, i) => (
+            <span className="ticker-item" key={i}>
+              <span className="ticker-sep">·</span>
+              {item}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Horizontal scroll showcase ───────────────────────────────────────── */}
+      <section ref={showcaseRef} className="hscroll-section">
+        <div ref={scrollTrackRef} className="hscroll-track">
+          {SHOWCASE_PANELS.map((panel, i) => (
+            <div className="hscroll-panel" key={i}>
+              <div className="hscroll-panel-inner">
+                <div className="hscroll-left">
+                  <span className="hscroll-num">{panel.num}</span>
+                  <span className="hscroll-tag">{panel.tag}</span>
+                  <h2 className="hscroll-title">
+                    {panel.title.split("\n").map((line, j) => (
+                      <span key={j}>{line}{j === 0 && <br />}</span>
+                    ))}
+                  </h2>
+                  <p className="hscroll-desc">{panel.desc}</p>
+                  <div className="hscroll-dots">
+                    {SHOWCASE_PANELS.map((_, j) => (
+                      <div key={j} className={`hscroll-dot${j === i ? " active" : ""}`} />
+                    ))}
+                  </div>
+                </div>
+                <div className="hscroll-right">
+                  <div className="hscroll-glyph">{panel.glyph}</div>
+                  <div className="hscroll-lines">
+                    {panel.lines.map((line, j) => (
+                      <div className="hscroll-line-item" key={j}>
+                        <span className="hscroll-line-num">{String(j + 1).padStart(2, "0")}</span>
+                        {line}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
 
       {/* ── Features ──────────────────────────────────────────────────────────── */}
@@ -441,7 +554,7 @@ export default function LandingPage({ onEnterApp }: { onEnterApp: () => void }) 
               ) : (
                 <>
                   <button className="hero-btn-primary" onClick={() => setAuthOpen(true)}>Create free account</button>
-                  <button className="hero-btn-ghost" onClick={onEnterApp}>Try without account →</button>
+                  <button className="hero-btn-ghost" onClick={() => setAuthOpen(true)}>Sign in →</button>
                 </>
               )}
             </div>

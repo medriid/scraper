@@ -7,6 +7,7 @@ import {
   getSession,
   listSessions,
 } from "../services/supabaseService.js";
+import { requireOwner, requireAuth } from "./auth.js";
 
 const router = Router();
 
@@ -18,7 +19,7 @@ const StartSessionSchema = z.object({
 });
 
 // POST /api/scraper/start — creates DB session + streams agent via SSE
-router.post("/start", async (req: Request, res: Response): Promise<void> => {
+router.post("/start", requireOwner, async (req: Request, res: Response): Promise<void> => {
   const parse = StartSessionSchema.safeParse(req.body);
   if (!parse.success) {
     res.status(400).json({ error: parse.error.flatten() });
@@ -26,6 +27,7 @@ router.post("/start", async (req: Request, res: Response): Promise<void> => {
   }
 
   const { websiteUrl, instructions, modelId } = parse.data;
+  const userId = (req as Request & { userId: string }).userId;
 
   // Set SSE headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -35,22 +37,28 @@ router.post("/start", async (req: Request, res: Response): Promise<void> => {
   res.flushHeaders();
 
   // Create DB session (best-effort; null if Supabase not configured)
-  const sessionId = await createSession({ website_url: websiteUrl, instructions, model_id: modelId });
+  const sessionId = await createSession({ website_url: websiteUrl, instructions, model_id: modelId, user_id: userId });
 
   await runAgentSession(sessionId, websiteUrl, instructions, modelId, res);
 });
 
 // GET /api/scraper/sessions — list recent sessions
-router.get("/sessions", async (_req: Request, res: Response): Promise<void> => {
-  const sessions = await listSessions(20);
+router.get("/sessions", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const userId = (req as Request & { userId: string }).userId;
+  const sessions = await listSessions(20, userId);
   res.json({ sessions });
 });
 
 // GET /api/scraper/sessions/:id — get single session
-router.get("/sessions/:id", async (req: Request, res: Response): Promise<void> => {
+router.get("/sessions/:id", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const userId = (req as Request & { userId: string }).userId;
   const session = await getSession(String(req.params.id));
   if (!session) {
     res.status(404).json({ error: "Session not found" });
+    return;
+  }
+  if (session.user_id && session.user_id !== userId) {
+    res.status(403).json({ error: "Access denied" });
     return;
   }
   res.json({ session });
@@ -63,7 +71,7 @@ const QuickSchemaSchema = z.object({
   modelId: z.string().min(1),
 });
 
-router.post("/schema", async (req: Request, res: Response): Promise<void> => {
+router.post("/schema", requireOwner, async (req: Request, res: Response): Promise<void> => {
   const parse = QuickSchemaSchema.safeParse(req.body);
   if (!parse.success) {
     res.status(400).json({ error: parse.error.flatten() });
