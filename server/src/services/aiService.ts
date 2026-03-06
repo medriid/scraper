@@ -17,12 +17,28 @@ export interface ModelOption {
  */
 const GEMINI_MODELS: ModelOption[] = [
   {
+    id: "gemini-2.5-pro",
+    name: "Gemini 2.5 Pro",
+    provider: "gemini",
+    free: true,
+    contextWindow: "1M",
+    description: "Most capable Gemini — advanced reasoning & code",
+  },
+  {
+    id: "gemini-2.5-flash",
+    name: "Gemini 2.5 Flash",
+    provider: "gemini",
+    free: true,
+    contextWindow: "1M",
+    description: "Next-gen Flash — speed + strong reasoning",
+  },
+  {
     id: "gemini-2.0-flash",
     name: "Gemini 2.0 Flash",
     provider: "gemini",
     free: true,
     contextWindow: "1M",
-    description: "Google's latest fast model — balanced speed & quality",
+    description: "Google's fast model — balanced speed & quality",
   },
   {
     id: "gemini-2.0-flash-lite",
@@ -31,22 +47,6 @@ const GEMINI_MODELS: ModelOption[] = [
     free: true,
     contextWindow: "1M",
     description: "Ultra-fast lightweight Gemini 2.0 variant",
-  },
-  {
-    id: "gemini-2.5-pro-preview-03-25",
-    name: "Gemini 2.5 Pro (Preview)",
-    provider: "gemini",
-    free: true,
-    contextWindow: "1M",
-    description: "Most capable Gemini — advanced reasoning & code",
-  },
-  {
-    id: "gemini-2.5-flash-preview-04-17",
-    name: "Gemini 2.5 Flash (Preview)",
-    provider: "gemini",
-    free: true,
-    contextWindow: "1M",
-    description: "Next-gen Flash — speed + strong reasoning",
   },
   {
     id: "gemini-1.5-pro",
@@ -83,28 +83,28 @@ const GEMINI_MODELS: ModelOption[] = [
 const OPENROUTER_MODELS: ModelOption[] = [
   // ── Google ────────────────────────────────────────────────────────────────
   {
+    id: "google/gemini-2.5-pro:free",
+    name: "Gemini 2.5 Pro (OR)",
+    provider: "openrouter",
+    free: true,
+    contextWindow: "1M",
+    description: "Gemini 2.5 Pro via OpenRouter — top-tier reasoning",
+  },
+  {
+    id: "google/gemini-2.5-flash:free",
+    name: "Gemini 2.5 Flash (OR)",
+    provider: "openrouter",
+    free: true,
+    contextWindow: "1M",
+    description: "Gemini 2.5 Flash via OpenRouter — fast & capable",
+  },
+  {
     id: "google/gemini-2.0-flash-exp:free",
     name: "Gemini 2.0 Flash Exp (OR)",
     provider: "openrouter",
     free: true,
     contextWindow: "1M",
     description: "Gemini 2.0 Flash via OpenRouter — no Gemini key needed",
-  },
-  {
-    id: "google/gemini-2.0-pro-exp-02-05:free",
-    name: "Gemini 2.0 Pro Exp (OR)",
-    provider: "openrouter",
-    free: true,
-    contextWindow: "2M",
-    description: "Gemini 2.0 Pro Experimental via OpenRouter",
-  },
-  {
-    id: "google/gemini-2.5-pro-exp-03-25:free",
-    name: "Gemini 2.5 Pro Exp (OR)",
-    provider: "openrouter",
-    free: true,
-    contextWindow: "1M",
-    description: "Gemini 2.5 Pro Experimental via OpenRouter — top-tier",
   },
   {
     id: "google/gemma-3-27b-it:free",
@@ -307,8 +307,8 @@ function createOpenRouterClient(apiKey: string): OpenAI {
     baseURL: "https://openrouter.ai/api/v1",
     apiKey,
     defaultHeaders: {
-      "HTTP-Referer": process.env.CLIENT_URL ?? "https://scraper.app",
-      "X-Title": "AI Scraper",
+      "HTTP-Referer": process.env.CLIENT_URL ?? "https://scrapex.app",
+      "X-Title": "Scrapex",
     },
   });
 }
