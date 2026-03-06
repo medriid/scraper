@@ -73,6 +73,7 @@ export interface ScraperSession {
   website_url: string;
   instructions: string;
   model_id: string;
+  user_id?: string;
   suggested_schema?: Record<string, unknown>;
   refined_prompt?: string;
   generated_api_file?: string;
@@ -91,6 +92,7 @@ export async function createSession(session: ScraperSession): Promise<string | n
       website_url: session.website_url,
       instructions: session.instructions,
       model_id: session.model_id,
+      ...(session.user_id ? { user_id: session.user_id } : {}),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
@@ -138,15 +140,21 @@ export async function getSession(id: string): Promise<ScraperSession | null> {
   return data;
 }
 
-export async function listSessions(limit = 20): Promise<ScraperSession[]> {
+export async function listSessions(limit = 20, userId?: string): Promise<ScraperSession[]> {
   const client = getSupabaseClient();
   if (!client) return [];
 
-  const { data, error } = await client
+  let query = client
     .from("scraper_sessions")
     .select("*")
     .order("created_at", { ascending: false })
     .limit(limit);
+
+  if (userId) {
+    query = query.eq("user_id", userId);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.error("Supabase listSessions error:", error.message);

@@ -22,6 +22,29 @@ export async function requireAuth(req: Request, res: Response, next: import("exp
   next();
 }
 
+// Middleware: requireAuth + is_owner check
+export async function requireOwner(req: Request, res: Response, next: import("express").NextFunction): Promise<void> {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith("Bearer ")) {
+    res.status(401).json({ error: "Authentication required" });
+    return;
+  }
+  const token = auth.slice(7);
+  const user = await verifyUserToken(token);
+  if (!user) {
+    res.status(401).json({ error: "Invalid or expired token" });
+    return;
+  }
+  const profile = await getUserProfile(user.userId);
+  if (!profile?.is_owner) {
+    res.status(403).json({ error: "Access restricted to authorized users only" });
+    return;
+  }
+  (req as Request & { userId: string; userEmail: string }).userId = user.userId;
+  (req as Request & { userId: string; userEmail: string }).userEmail = user.email;
+  next();
+}
+
 // GET /api/auth/me — return current user's profile
 router.get("/me", requireAuth, async (req: Request, res: Response): Promise<void> => {
   const userId = (req as Request & { userId: string }).userId;

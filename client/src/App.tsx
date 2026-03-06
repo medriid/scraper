@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Zap, History, LogOut, User } from "lucide-react";
+import { Zap, History, LogOut, User, Lock } from "lucide-react";
 import { fetchModels } from "./lib/api";
 import { startAgentSession } from "./lib/api";
+import { supabase } from "./lib/supabase";
 import type { ModelOption, AgentStep, SessionPhase, SessionConfig, SessionResult } from "./types";
 import ConfigForm from "./components/ConfigForm";
 import AgentSession from "./components/AgentSession";
@@ -10,6 +11,7 @@ import ResultsPanel from "./components/ResultsPanel";
 import StepBar from "./components/StepBar";
 import SessionHistory from "./components/SessionHistory";
 import LandingPage from "./components/LandingPage";
+import AuthModal from "./components/AuthModal";
 import ScrapexLogo from "./components/icons/ScrapexLogo";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 
@@ -29,7 +31,9 @@ function AppContent() {
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [cancelFn, setCancelFn] = useState<(() => void) | null>(null);
-  const { user, profile, signOut } = useAuth();
+  const [gateAuthOpen, setGateAuthOpen] = useState(false);
+  const { user, profile, signOut, session, loading } = useAuth();
+  const supabaseEnabled = supabase !== null;
 
   useEffect(() => {
     if (view === "app") {
@@ -76,7 +80,8 @@ function AppContent() {
         setError(msg);
         setPhase("error");
         setAppStep("results");
-      }
+      },
+      session?.access_token
     );
     setCancelFn(() => cancel);
   }, []);
@@ -96,6 +101,62 @@ function AppContent() {
 
   if (view === "landing") {
     return <LandingPage onEnterApp={() => setView("app")} />;
+  }
+
+  // ── Owner access gate ───────────────────────────────────────────────────────
+  if (supabaseEnabled && loading) {
+    return (
+      <div className="access-gate">
+        <div className="spinner" style={{ width: 28, height: 28 }} />
+      </div>
+    );
+  }
+
+  if (supabaseEnabled && !user) {
+    return (
+      <>
+        <div className="access-gate">
+          <ScrapexLogo size={48} />
+          <div className="access-gate-icon"><Lock size={20} /></div>
+          <h2>Sign in to continue</h2>
+          <p>Scrapex is restricted to authorized users. Sign in to check your access.</p>
+          <button className="hero-btn-primary" onClick={() => setGateAuthOpen(true)}>
+            Sign in →
+          </button>
+          <button className="btn btn-ghost" onClick={() => setView("landing")} style={{ fontSize: "0.82rem" }}>
+            ← Back to home
+          </button>
+        </div>
+        <AnimatePresence>
+          {gateAuthOpen && (
+            <AuthModal
+              onClose={() => setGateAuthOpen(false)}
+              onSuccess={() => setGateAuthOpen(false)}
+            />
+          )}
+        </AnimatePresence>
+      </>
+    );
+  }
+
+  if (supabaseEnabled && user && profile !== null && !profile.is_owner) {
+    return (
+      <div className="access-gate">
+        <ScrapexLogo size={48} />
+        <div className="access-gate-icon"><Lock size={20} /></div>
+        <h2>Access restricted</h2>
+        <p>
+          Hi {profile.display_name ?? user.email?.split("@")[0] ?? "there"}, your account doesn't
+          have access to Scrapex. Contact the owner to request access.
+        </p>
+        <button className="btn btn-ghost" onClick={signOut}>
+          Sign out
+        </button>
+        <button className="btn btn-ghost" onClick={() => setView("landing")} style={{ fontSize: "0.82rem" }}>
+          ← Back to home
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -244,7 +305,7 @@ function AppContent() {
                 exit={{ opacity: 0, y: 12 }}
                 transition={{ duration: 0.25 }}
               >
-                <SessionHistory onClose={() => setShowHistory(false)} />
+                <SessionHistory onClose={() => setShowHistory(false)} token={session?.access_token} />
               </motion.div>
             )}
           </AnimatePresence>

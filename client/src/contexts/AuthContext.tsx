@@ -17,6 +17,8 @@ interface AuthContextValue {
   loading: boolean;
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string, displayName?: string) => Promise<{ error: string | null }>;
+  signInWithGoogle: () => Promise<{ error: string | null }>;
+  signInWithGitHub: () => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
 }
 
@@ -92,13 +94,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error?.message ?? null };
   };
 
+  const signInWithGoogle = async (): Promise<{ error: string | null }> => {
+    if (!supabase) return { error: "Supabase not configured" };
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin },
+    });
+    return { error: error?.message ?? null };
+  };
+
+  const signInWithGitHub = async (): Promise<{ error: string | null }> => {
+    if (!supabase) return { error: "Supabase not configured" };
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "github",
+      options: { redirectTo: window.location.origin },
+    });
+    return { error: error?.message ?? null };
+  };
+
   const signOut = async () => {
     if (!supabase) return;
     await supabase.auth.signOut();
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, profile, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, session, profile, loading, signIn, signUp, signInWithGoogle, signInWithGitHub, signOut }}>
       {children}
     </AuthContext.Provider>
   );
