@@ -1,8 +1,9 @@
 export interface ModelOption {
   id: string;
   name: string;
-  provider: "openai" | "openrouter";
+  provider: "gemini" | "openrouter";
   free: boolean;
+  contextWindow: string;
   description: string;
   available: boolean;
 }

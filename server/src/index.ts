@@ -4,12 +4,8 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import path from "path";
-import { fileURLToPath } from "url";
 import scraperRouter from "./routes/scraper.js";
 import modelsRouter from "./routes/models.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? "3001", 10);
@@ -17,7 +13,19 @@ const PORT = parseInt(process.env.PORT ?? "3001", 10);
 // ─── Security ────────────────────────────────────────────────────────────────
 app.use(
   helmet({
-    contentSecurityPolicy: false, // handled by client vite config
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "blob:"],
+        connectSrc: ["'self'", "https://openrouter.ai", "https://generativelanguage.googleapis.com"],
+        fontSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+      },
+    },
   })
 );
 
@@ -41,13 +49,20 @@ app.use(
 );
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
-const limiter = rateLimit({
+const apiLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.use("/api", limiter);
+app.use("/api", apiLimiter);
+
+const staticLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // ─── Body parsing ─────────────────────────────────────────────────────────────
 app.use(express.json({ limit: "2mb" }));
@@ -63,6 +78,7 @@ app.get("/api/health", (_req, res) => {
 // ─── Serve built client in production ────────────────────────────────────────
 if (process.env.NODE_ENV === "production") {
   const clientDist = path.join(__dirname, "../../client/dist");
+  app.use(staticLimiter);
   app.use(express.static(clientDist));
   app.get("*", (_req, res) => {
     res.sendFile(path.join(clientDist, "index.html"));

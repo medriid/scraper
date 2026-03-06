@@ -47,5 +47,5 @@ export function resetPools(): void {
   }
 }
 
-export const OPENAI_PREFIX = "OPENAI_API_KEY";
+export const GEMINI_PREFIX = "GEMINI_API_KEY";
 export const OPENROUTER_PREFIX = "OPENROUTER_API_KEY";

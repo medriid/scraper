@@ -35,7 +35,7 @@ router.post("/start", async (req: Request, res: Response): Promise<void> => {
   res.flushHeaders();
 
   // Create DB session (best-effort; null if Supabase not configured)
-  const sessionId = await createSession({ websiteUrl, instructions, model_id: modelId });
+  const sessionId = await createSession({ website_url: websiteUrl, instructions, model_id: modelId });
 
   await runAgentSession(sessionId, websiteUrl, instructions, modelId, res);
 });
@@ -48,7 +48,7 @@ router.get("/sessions", async (_req: Request, res: Response): Promise<void> => {
 
 // GET /api/scraper/sessions/:id — get single session
 router.get("/sessions/:id", async (req: Request, res: Response): Promise<void> => {
-  const session = await getSession(req.params.id);
+  const session = await getSession(String(req.params.id));
   if (!session) {
     res.status(404).json({ error: "Session not found" });
     return;
