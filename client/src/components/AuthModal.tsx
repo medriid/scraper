@@ -116,7 +116,8 @@ export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
           </button>
         </div>
 
-        {error && !loading && <p className="auth-error" style={{ marginBottom: 4 }}>{error}</p>}
+        {/* Unified error display — covers both social and email errors */}
+        {error && <p className="auth-error" style={{ marginBottom: 4 }}>{error}</p>}
 
         <div className="auth-divider"><span>or continue with email</span></div>
 
@@ -162,7 +163,6 @@ export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
             />
           </div>
 
-          {error && loading && <p className="auth-error">{error}</p>}
           {message && <p className="auth-success">{message}</p>}
 
           <button type="submit" className="btn btn-primary" disabled={loading || !!socialLoading} style={{ width: "100%" }}>

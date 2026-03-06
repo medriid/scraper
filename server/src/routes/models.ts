@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { AVAILABLE_MODELS } from "../services/aiService.js";
-import { getKeyCount, GEMINI_PREFIX, OPENROUTER_PREFIX } from "../services/keyRotation.js";
+import { getKeyCount, GEMINI_PREFIX, OPENROUTER_PREFIX, GROQ_PREFIX } from "../services/keyRotation.js";
 
 const router = Router();
 
@@ -8,11 +8,16 @@ const router = Router();
 router.get("/", (_req: Request, res: Response): void => {
   const geminiKeys = getKeyCount(GEMINI_PREFIX);
   const openrouterKeys = getKeyCount(OPENROUTER_PREFIX);
+  const groqKeys = getKeyCount(GROQ_PREFIX);
 
   const models = AVAILABLE_MODELS.map((m) => ({
     ...m,
     available:
-      m.provider === "gemini" ? geminiKeys > 0 : openrouterKeys > 0,
+      m.provider === "gemini"
+        ? geminiKeys > 0
+        : m.provider === "groq"
+        ? groqKeys > 0
+        : openrouterKeys > 0,
   }));
 
   res.json({
@@ -20,6 +25,7 @@ router.get("/", (_req: Request, res: Response): void => {
     keyStatus: {
       gemini: geminiKeys,
       openrouter: openrouterKeys,
+      groq: groqKeys,
     },
   });
 });

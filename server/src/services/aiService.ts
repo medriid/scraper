@@ -1,11 +1,11 @@
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 import OpenAI from "openai";
-import { getNextKey, GEMINI_PREFIX, OPENROUTER_PREFIX } from "./keyRotation.js";
+import { getNextKey, GEMINI_PREFIX, OPENROUTER_PREFIX, GROQ_PREFIX } from "./keyRotation.js";
 
 export interface ModelOption {
   id: string;
   name: string;
-  provider: "gemini" | "openrouter";
+  provider: "gemini" | "openrouter" | "groq";
   free: boolean;
   contextWindow: string;
   description: string;
@@ -294,7 +294,80 @@ const OPENROUTER_MODELS: ModelOption[] = [
   },
 ];
 
-export const AVAILABLE_MODELS: ModelOption[] = [...GEMINI_MODELS, ...OPENROUTER_MODELS];
+/**
+ * Groq models — ultra-fast inference via Groq's LPU hardware.
+ * OpenAI-compatible API at https://api.groq.com/openai/v1
+ * All models on a generous free tier (14,400 req/day, 6k tokens/min).
+ * Get free API keys at https://console.groq.com
+ */
+const GROQ_MODELS: ModelOption[] = [
+  {
+    id: "meta-llama/llama-4-maverick-17b-128e-instruct",
+    name: "Llama 4 Maverick 17B",
+    provider: "groq",
+    free: true,
+    contextWindow: "512K",
+    description: "Meta Llama 4 Maverick — best Groq model, strong reasoning",
+  },
+  {
+    id: "meta-llama/llama-4-scout-17b-16e-instruct",
+    name: "Llama 4 Scout 17B",
+    provider: "groq",
+    free: true,
+    contextWindow: "512K",
+    description: "Meta Llama 4 Scout — 512K context, fast & capable",
+  },
+  {
+    id: "llama-3.3-70b-versatile",
+    name: "Llama 3.3 70B",
+    provider: "groq",
+    free: true,
+    contextWindow: "128K",
+    description: "Meta Llama 3.3 70B — ultra-fast, excellent instruction following",
+  },
+  {
+    id: "deepseek-r1-distill-llama-70b",
+    name: "DeepSeek R1 Distill 70B",
+    provider: "groq",
+    free: true,
+    contextWindow: "128K",
+    description: "DeepSeek R1 reasoning distilled into Llama 70B, on Groq",
+  },
+  {
+    id: "qwen-qwq-32b",
+    name: "Qwen QwQ 32B",
+    provider: "groq",
+    free: true,
+    contextWindow: "128K",
+    description: "Qwen QwQ 32B — deep o1-style reasoning on Groq",
+  },
+  {
+    id: "llama-3.3-70b-specdec",
+    name: "Llama 3.3 70B SpecDec",
+    provider: "groq",
+    free: true,
+    contextWindow: "8K",
+    description: "Llama 3.3 70B with speculative decoding — extra fast",
+  },
+  {
+    id: "llama-3.1-8b-instant",
+    name: "Llama 3.1 8B Instant",
+    provider: "groq",
+    free: true,
+    contextWindow: "128K",
+    description: "Meta Llama 3.1 8B — fastest model on Groq, 128K context",
+  },
+  {
+    id: "gemma2-9b-it",
+    name: "Gemma 2 9B",
+    provider: "groq",
+    free: true,
+    contextWindow: "8K",
+    description: "Google Gemma 2 9B Instruct — compact & reliable on Groq",
+  },
+];
+
+export const AVAILABLE_MODELS: ModelOption[] = [...GEMINI_MODELS, ...OPENROUTER_MODELS, ...GROQ_MODELS];
 
 // ─── Client factories ─────────────────────────────────────────────────────────
 
@@ -310,6 +383,13 @@ function createOpenRouterClient(apiKey: string): OpenAI {
       "HTTP-Referer": process.env.CLIENT_URL ?? "https://scrapex.app",
       "X-Title": "Scrapex",
     },
+  });
+}
+
+function createGroqClient(apiKey: string): OpenAI {
+  return new OpenAI({
+    baseURL: "https://api.groq.com/openai/v1",
+    apiKey,
   });
 }
 
@@ -331,6 +411,8 @@ export async function chatCompletion(
 
   if (model.provider === "gemini") {
     return geminiChat(modelId, messages, temperature, maxTokens);
+  } else if (model.provider === "groq") {
+    return groqChat(modelId, messages, temperature, maxTokens);
   } else {
     return openrouterChat(modelId, messages, temperature, maxTokens);
   }
@@ -347,6 +429,8 @@ export async function* streamCompletion(
 
   if (model.provider === "gemini") {
     yield* geminiStream(modelId, messages, temperature, maxTokens);
+  } else if (model.provider === "groq") {
+    yield* groqStream(modelId, messages, temperature, maxTokens);
   } else {
     yield* openrouterStream(modelId, messages, temperature, maxTokens);
   }
@@ -454,6 +538,51 @@ async function* openrouterStream(
   if (!apiKey) throw new Error("No OpenRouter API key available (set OPENROUTER_API_KEY_1, ...)");
 
   const client = createOpenRouterClient(apiKey);
+  const stream = await client.chat.completions.create({
+    model: modelId,
+    messages,
+    temperature,
+    max_tokens: maxTokens,
+    stream: true,
+  });
+
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta?.content;
+    if (delta) yield delta;
+  }
+}
+
+// ─── Groq implementation ──────────────────────────────────────────────────────
+
+async function groqChat(
+  modelId: string,
+  messages: ChatMessage[],
+  temperature: number,
+  maxTokens: number
+): Promise<string> {
+  const apiKey = getNextKey(GROQ_PREFIX);
+  if (!apiKey) throw new Error("No Groq API key available (set GROQ_API_KEY_1, ...)");
+
+  const client = createGroqClient(apiKey);
+  const response = await client.chat.completions.create({
+    model: modelId,
+    messages,
+    temperature,
+    max_tokens: maxTokens,
+  });
+  return response.choices[0]?.message?.content ?? "";
+}
+
+async function* groqStream(
+  modelId: string,
+  messages: ChatMessage[],
+  temperature: number,
+  maxTokens: number
+): AsyncGenerator<string> {
+  const apiKey = getNextKey(GROQ_PREFIX);
+  if (!apiKey) throw new Error("No Groq API key available (set GROQ_API_KEY_1, ...)");
+
+  const client = createGroqClient(apiKey);
   const stream = await client.chat.completions.create({
     model: modelId,
     messages,

@@ -21,7 +21,7 @@ type AppView = "landing" | "app";
 function AppContent() {
   const [view, setView] = useState<AppView>("landing");
   const [models, setModels] = useState<ModelOption[]>([]);
-  const [keyStatus, setKeyStatus] = useState({ gemini: 0, openrouter: 0 });
+  const [keyStatus, setKeyStatus] = useState({ gemini: 0, openrouter: 0, groq: 0 });
   const [phase, setPhase] = useState<SessionPhase>("idle");
   const [appStep, setAppStep] = useState<AppStep>("config");
   const [config, setConfig] = useState<SessionConfig | null>(null);
@@ -40,7 +40,7 @@ function AppContent() {
       fetchModels()
         .then(({ models, keyStatus }) => {
           setModels(models);
-          setKeyStatus({ gemini: keyStatus.gemini ?? 0, openrouter: keyStatus.openrouter ?? 0 });
+          setKeyStatus({ gemini: keyStatus.gemini ?? 0, openrouter: keyStatus.openrouter ?? 0, groq: keyStatus.groq ?? 0 });
         })
         .catch(console.warn);
     }
@@ -139,7 +139,7 @@ function AppContent() {
     );
   }
 
-  if (supabaseEnabled && user && profile !== null && !profile.is_owner) {
+  if (supabaseEnabled && user && profile != null && !profile.is_owner) {
     return (
       <div className="access-gate">
         <ScrapexLogo size={48} />
@@ -183,7 +183,7 @@ function AppContent() {
               )}
               <div className="header-status">
                 <span
-                  className={`status-dot ${keyStatus.gemini > 0 || keyStatus.openrouter > 0 ? "online" : ""}`}
+                  className={`status-dot ${keyStatus.gemini > 0 || keyStatus.openrouter > 0 || keyStatus.groq > 0 ? "online" : ""}`}
                 />
                 {keyStatus.gemini > 0 && (
                   <span>{keyStatus.gemini} Gemini key{keyStatus.gemini !== 1 ? "s" : ""}</span>
@@ -191,7 +191,10 @@ function AppContent() {
                 {keyStatus.openrouter > 0 && (
                   <span>{keyStatus.openrouter} OR key{keyStatus.openrouter !== 1 ? "s" : ""}</span>
                 )}
-                {keyStatus.gemini === 0 && keyStatus.openrouter === 0 && (
+                {keyStatus.groq > 0 && (
+                  <span>{keyStatus.groq} Groq key{keyStatus.groq !== 1 ? "s" : ""}</span>
+                )}
+                {keyStatus.gemini === 0 && keyStatus.openrouter === 0 && keyStatus.groq === 0 && (
                   <span style={{ color: "var(--step-error)" }}>no keys configured</span>
                 )}
               </div>

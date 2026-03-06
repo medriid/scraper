@@ -4,7 +4,7 @@ const BASE = "/api";
 
 export async function fetchModels(): Promise<{
   models: ModelOption[];
-  keyStatus: { gemini: number; openrouter: number };
+  keyStatus: { gemini: number; openrouter: number; groq: number };
 }> {
   const res = await fetch(`${BASE}/models`);
   if (!res.ok) throw new Error("Failed to fetch models");

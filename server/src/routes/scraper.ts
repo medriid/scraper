@@ -51,9 +51,14 @@ router.get("/sessions", requireAuth, async (req: Request, res: Response): Promis
 
 // GET /api/scraper/sessions/:id — get single session
 router.get("/sessions/:id", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const userId = (req as Request & { userId: string }).userId;
   const session = await getSession(String(req.params.id));
   if (!session) {
     res.status(404).json({ error: "Session not found" });
+    return;
+  }
+  if (session.user_id && session.user_id !== userId) {
+    res.status(403).json({ error: "Access denied" });
     return;
   }
   res.json({ session });
