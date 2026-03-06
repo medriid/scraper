@@ -6,6 +6,7 @@ import rateLimit from "express-rate-limit";
 import path from "path";
 import scraperRouter from "./routes/scraper.js";
 import modelsRouter from "./routes/models.js";
+import authRouter from "./routes/auth.js";
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? "3001", 10);
@@ -70,6 +71,7 @@ app.use(express.json({ limit: "2mb" }));
 // ─── API routes ───────────────────────────────────────────────────────────────
 app.use("/api/scraper", scraperRouter);
 app.use("/api/models", modelsRouter);
+app.use("/api/auth", authRouter);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", ts: new Date().toISOString() });

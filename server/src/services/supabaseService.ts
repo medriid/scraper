@@ -7,6 +7,67 @@ function getSupabaseClient() {
   return createClient(url, key);
 }
 
+export interface UserProfile {
+  id: string;
+  email: string;
+  display_name?: string;
+  avatar_url?: string | null;
+  is_owner: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export async function getUserProfile(userId: string): Promise<UserProfile | null> {
+  const client = getSupabaseClient();
+  if (!client) return null;
+
+  const { data, error } = await client
+    .from("users")
+    .select("*")
+    .eq("id", userId)
+    .single();
+
+  if (error) {
+    console.error("Supabase getUserProfile error:", error.message);
+    return null;
+  }
+  return data;
+}
+
+export async function upsertUserProfile(profile: Omit<UserProfile, "is_owner" | "created_at" | "updated_at">): Promise<UserProfile | null> {
+  const client = getSupabaseClient();
+  if (!client) return null;
+
+  const { data, error } = await client
+    .from("users")
+    .upsert({
+      id: profile.id,
+      email: profile.email,
+      display_name: profile.display_name,
+      avatar_url: profile.avatar_url,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "id" })
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Supabase upsertUserProfile error:", error.message);
+    return null;
+  }
+  return data;
+}
+
+export async function verifyUserToken(token: string): Promise<{ userId: string; email: string } | null> {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY;
+  if (!url || !key) return null;
+
+  const client = createClient(url, key);
+  const { data, error } = await client.auth.getUser(token);
+  if (error || !data.user) return null;
+  return { userId: data.user.id, email: data.user.email ?? "" };
+}
+
 export interface ScraperSession {
   id?: string;
   website_url: string;

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Zap, History } from "lucide-react";
+import { Zap, History, LogOut, User } from "lucide-react";
 import { fetchModels } from "./lib/api";
 import { startAgentSession } from "./lib/api";
 import type { ModelOption, AgentStep, SessionPhase, SessionConfig, SessionResult } from "./types";
@@ -9,10 +9,15 @@ import AgentSession from "./components/AgentSession";
 import ResultsPanel from "./components/ResultsPanel";
 import StepBar from "./components/StepBar";
 import SessionHistory from "./components/SessionHistory";
+import LandingPage from "./components/LandingPage";
+import ScrapexLogo from "./components/icons/ScrapexLogo";
+import { AuthProvider, useAuth } from "./contexts/AuthContext";
 
 type AppStep = "config" | "running" | "results";
+type AppView = "landing" | "app";
 
-export default function App() {
+function AppContent() {
+  const [view, setView] = useState<AppView>("landing");
   const [models, setModels] = useState<ModelOption[]>([]);
   const [keyStatus, setKeyStatus] = useState({ gemini: 0, openrouter: 0 });
   const [phase, setPhase] = useState<SessionPhase>("idle");
@@ -24,15 +29,18 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [cancelFn, setCancelFn] = useState<(() => void) | null>(null);
+  const { user, profile, signOut } = useAuth();
 
   useEffect(() => {
-    fetchModels()
-      .then(({ models, keyStatus }) => {
-        setModels(models);
-        setKeyStatus({ gemini: keyStatus.gemini ?? 0, openrouter: keyStatus.openrouter ?? 0 });
-      })
-      .catch(console.warn);
-  }, []);
+    if (view === "app") {
+      fetchModels()
+        .then(({ models, keyStatus }) => {
+          setModels(models);
+          setKeyStatus({ gemini: keyStatus.gemini ?? 0, openrouter: keyStatus.openrouter ?? 0 });
+        })
+        .catch(console.warn);
+    }
+  }, [view]);
 
   const handleStart = useCallback((cfg: SessionConfig) => {
     setConfig(cfg);
@@ -86,17 +94,32 @@ export default function App() {
 
   const stepIndex = appStep === "config" ? 0 : appStep === "running" ? 1 : 2;
 
+  if (view === "landing") {
+    return <LandingPage onEnterApp={() => setView("app")} />;
+  }
+
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       {/* Header */}
       <header className="header">
         <div className="container">
           <div className="header-inner">
-            <a href="/" className="logo" onClick={(e) => { e.preventDefault(); handleReset(); }}>
-              <span className="logo-dot" />
-              AI Scraper
+            <a
+              href="/"
+              className="logo"
+              onClick={(e) => { e.preventDefault(); setView("landing"); handleReset(); }}
+            >
+              <ScrapexLogo size={20} className="logo-icon" />
+              Scrapex
             </a>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {user && (
+                <div className="header-user">
+                  <User size={12} />
+                  <span>{profile?.display_name ?? user.email?.split("@")[0]}</span>
+                  {profile?.is_owner && <span className="owner-badge">owner</span>}
+                </div>
+              )}
               <div className="header-status">
                 <span
                   className={`status-dot ${keyStatus.gemini > 0 || keyStatus.openrouter > 0 ? "online" : ""}`}
@@ -118,6 +141,15 @@ export default function App() {
               >
                 <History size={15} />
               </button>
+              {user && (
+                <button
+                  className="btn btn-ghost"
+                  onClick={signOut}
+                  title="Sign out"
+                >
+                  <LogOut size={15} />
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -222,9 +254,17 @@ export default function App() {
       {/* Footer */}
       <footer className="footer">
         <div className="container">
-          <p>AI Scraper — Agentic Web Extraction · Heroku + Supabase + Gemini + OpenRouter</p>
+          <p>Scrapex — Agentic Web Extraction · Heroku + Supabase + Gemini + OpenRouter</p>
         </div>
       </footer>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
