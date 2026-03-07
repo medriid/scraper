@@ -10,11 +10,13 @@ import {
   Lock,
   Zap,
   ChevronRight,
+  Users,
+  AlertCircle,
 } from "lucide-react";
-import { fetchModels } from "./lib/api";
+import { fetchModels, fetchUsage } from "./lib/api";
 import { startAgentSession } from "./lib/api";
 import { supabase } from "./lib/supabase";
-import type { ModelOption, AgentStep, SessionPhase, SessionConfig, SessionResult } from "./types";
+import type { ModelOption, AgentStep, SessionPhase, SessionConfig, SessionResult, DailyUsage } from "./types";
 import ConfigForm from "./components/ConfigForm";
 import AgentSession from "./components/AgentSession";
 import ResultsPanel from "./components/ResultsPanel";
@@ -22,6 +24,7 @@ import StepBar from "./components/StepBar";
 import SessionHistory from "./components/SessionHistory";
 import ScraperLibrary from "./components/ScraperLibrary";
 import SettingsPanel from "./components/SettingsPanel";
+import TeamsPanel from "./components/TeamsPanel";
 import LandingPage from "./components/LandingPage";
 import AuthModal from "./components/AuthModal";
 import ScrapexLogo from "./components/icons/ScrapexLogo";
@@ -33,12 +36,13 @@ const THEME_KEY = "scrapex-theme";
 
 type AppStep = "config" | "running" | "results";
 type AppView = "landing" | "app";
-type SidebarTab = "session" | "history" | "library" | "settings";
+type SidebarTab = "session" | "history" | "library" | "teams" | "settings";
 
 const TAB_LABELS: Record<SidebarTab, string> = {
   session: "New Session",
   history: "History",
   library: "Library",
+  teams: "Teams",
   settings: "Settings",
 };
 
@@ -73,13 +77,11 @@ function AppContent() {
   const [cancelFn, setCancelFn] = useState<(() => void) | null>(null);
   const [gateAuthOpen, setGateAuthOpen] = useState(false);
   const [prefillConfig, setPrefillConfig] = useState<Partial<SessionConfig> | null>(null);
+  const [usage, setUsage] = useState<DailyUsage | null>(null);
   const { user, profile, signOut, session, loading } = useAuth();
   const { theme, setTheme } = useTheme();
   const supabaseEnabled = supabase !== null;
 
-  // Use a ref so handleStart always reads the latest session token
-  // without needing session in its dependency array (avoids recreating
-  // the callback every time the token refreshes while a session runs).
   const sessionRef = useRef(session);
   useEffect(() => {
     sessionRef.current = session;
@@ -100,6 +102,15 @@ function AppContent() {
     }
   }, [view]);
 
+  // Fetch usage stats when user is logged in
+  useEffect(() => {
+    if (view === "app" && session?.access_token) {
+      fetchUsage(session.access_token)
+        .then((data) => setUsage(data.usage))
+        .catch(console.warn);
+    }
+  }, [view, session?.access_token]);
+
   const handleStart = useCallback((cfg: SessionConfig) => {
     setConfig(cfg);
     setAppStep("running");
@@ -109,8 +120,6 @@ function AppContent() {
     setResult(null);
     setError(null);
 
-    // Always read the latest token via the ref — fixes the stale-closure
-    // bug that caused "Authentication required" even for owner accounts.
     const token = sessionRef.current?.access_token;
 
     const cancel = startAgentSession(
@@ -133,6 +142,12 @@ function AppContent() {
       (_sid) => {
         setPhase("complete");
         setAppStep("results");
+        // Refresh usage after a successful session
+        if (sessionRef.current?.access_token) {
+          fetchUsage(sessionRef.current.access_token)
+            .then((data) => setUsage(data.usage))
+            .catch(console.warn);
+        }
       },
       (msg) => {
         setError(msg);
@@ -156,7 +171,6 @@ function AppContent() {
     setPrefillConfig(null);
   }, [cancelFn]);
 
-  // Re-run a session from the library
   const handleRerun = useCallback(
     (websiteUrl: string, instructions: string, modelId: string) => {
       handleReset();
@@ -215,37 +229,15 @@ function AppContent() {
     );
   }
 
-  if (supabaseEnabled && user && profile != null && !profile.is_owner) {
-    return (
-      <div className="access-gate">
-        <ScrapexLogo size={48} />
-        <div className="access-gate-icon">
-          <Lock size={20} />
-        </div>
-        <h2>Access restricted</h2>
-        <p>
-          Hi {profile.display_name ?? user.email?.split("@")[0] ?? "there"}, your account doesn't
-          have access to Scrapex. Contact the owner to request access.
-        </p>
-        <button className="btn btn-ghost" onClick={signOut}>
-          Sign out
-        </button>
-        <button
-          className="btn btn-ghost"
-          onClick={() => setView("landing")}
-          style={{ fontSize: "0.82rem" }}
-        >
-          ← Back to home
-        </button>
-      </div>
-    );
-  }
-
   // ── Dashboard ─────────────────────────────────────────────────────────────
+  const isOwner = profile?.is_owner ?? false;
+  const totalKeys = keyStatus.gemini + keyStatus.openrouter + keyStatus.groq;
+
   const sidebarItems: Array<{ id: SidebarTab; icon: React.ReactNode; label: string }> = [
     { id: "session", icon: <Terminal size={16} />, label: "New Session" },
     { id: "history", icon: <History size={16} />, label: "History" },
     { id: "library", icon: <BookOpen size={16} />, label: "Library" },
+    { id: "teams", icon: <Users size={16} />, label: "Teams" },
     { id: "settings", icon: <Settings size={16} />, label: "Settings" },
   ];
 
@@ -281,18 +273,32 @@ function AppContent() {
           ))}
         </nav>
 
+        {/* Usage indicator for non-owners */}
+        {!isOwner && usage && (
+          <div className="sidebar-usage">
+            <div className="sidebar-usage-label">
+              <AlertCircle size={11} />
+              <span>Daily usage</span>
+            </div>
+            <div className="sidebar-usage-bar">
+              <div
+                className="sidebar-usage-fill"
+                style={{
+                  width: `${Math.min(100, (usage.used / usage.limit) * 100)}%`,
+                  background: usage.used >= usage.limit ? "var(--step-error)" : "var(--text-2)",
+                }}
+              />
+            </div>
+            <span className="sidebar-usage-count">
+              {usage.used}/{usage.limit} prompt{usage.limit !== 1 ? "s" : ""}
+            </span>
+          </div>
+        )}
+
         <div className="sidebar-key-status">
-          <span
-            className={`status-dot ${
-              keyStatus.gemini + keyStatus.openrouter + keyStatus.groq > 0 ? "online" : ""
-            }`}
-          />
+          <span className={`status-dot ${totalKeys > 0 ? "online" : ""}`} />
           <span className="sidebar-key-label">
-            {keyStatus.gemini + keyStatus.openrouter + keyStatus.groq > 0
-              ? `${keyStatus.gemini + keyStatus.openrouter + keyStatus.groq} API key${
-                  keyStatus.gemini + keyStatus.openrouter + keyStatus.groq !== 1 ? "s" : ""
-                }`
-              : "no keys"}
+            {totalKeys > 0 ? `${totalKeys} API key${totalKeys !== 1 ? "s" : ""}` : "no keys"}
           </span>
           {SHOW_DB_STATUS && <DbStatusBadge />}
         </div>
@@ -301,13 +307,17 @@ function AppContent() {
           {user ? (
             <div className="sidebar-user">
               <div className="sidebar-user-avatar">
-                <User size={13} />
+                {profile?.avatar_url ? (
+                  <img src={profile.avatar_url} alt={profile.display_name ?? "User avatar"} style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                ) : (
+                  <User size={13} />
+                )}
               </div>
               <div className="sidebar-user-info">
                 <span className="sidebar-user-name">
                   {profile?.display_name ?? user.email?.split("@")[0]}
                 </span>
-                {profile?.is_owner && <span className="owner-badge">owner</span>}
+                {isOwner && <span className="owner-badge">owner</span>}
               </div>
               <button
                 className="btn btn-ghost btn-icon sidebar-signout"
@@ -355,6 +365,7 @@ function AppContent() {
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -14 }}
                 transition={{ duration: 0.2 }}
+                style={{ height: "100%", display: "flex", flexDirection: "column" }}
               >
                 <AnimatePresence>
                   {appStep === "config" && (
@@ -367,18 +378,26 @@ function AppContent() {
                     >
                       <div className="hero-badge">
                         <Zap size={10} />
-                        Agentic Web Extraction
+                        Agentic Scraper Generation
                       </div>
                       <h1>
-                        Scrape any website
+                        Generate a TypeScript
                         <br />
-                        with AI-generated TypeScript
+                        scraper in seconds
                       </h1>
                       <p>
                         Give the AI a URL and instructions. It will analyse the site, design a data
-                        schema, refine the prompt, and write a production-ready TypeScript
-                        scraper — live, step by step.
+                        schema, and write a production-ready TypeScript script you can run locally
+                        to fetch all the data you need.
                       </p>
+                      {!isOwner && usage && usage.used >= usage.limit && (
+                        <div className="usage-limit-banner">
+                          <AlertCircle size={14} />
+                          <span>
+                            You've used your {usage.limit} daily prompt{usage.limit !== 1 ? "s" : ""}. Resets at midnight UTC.
+                          </span>
+                        </div>
+                      )}
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -399,6 +418,7 @@ function AppContent() {
                         keyStatus={keyStatus}
                         onStart={handleStart}
                         prefill={prefillConfig ?? undefined}
+                        disabled={!isOwner && !!usage && usage.used >= usage.limit}
                       />
                     </motion.div>
                   )}
@@ -481,6 +501,19 @@ function AppContent() {
               </motion.div>
             )}
 
+            {/* Teams tab */}
+            {sidebarTab === "teams" && (
+              <motion.div
+                key="teams-tab"
+                initial={{ opacity: 0, x: 14 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -14 }}
+                transition={{ duration: 0.2 }}
+              >
+                <TeamsPanel token={session?.access_token} userId={user?.id} />
+              </motion.div>
+            )}
+
             {/* Settings tab */}
             {sidebarTab === "settings" && (
               <motion.div
@@ -507,3 +540,4 @@ export default function App() {
     </AuthProvider>
   );
 }
+

@@ -9,6 +9,8 @@ interface Props {
   onStart: (config: SessionConfig) => void;
   /** Optional pre-filled values (e.g. from "Run again" in the Library) */
   prefill?: Partial<SessionConfig>;
+  /** Disable form when user has hit their daily limit */
+  disabled?: boolean;
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -17,7 +19,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   groq: "Groq",
 };
 
-export default function ConfigForm({ models, keyStatus, onStart, prefill }: Props) {
+export default function ConfigForm({ models, keyStatus, onStart, prefill, disabled = false }: Props) {
   const [websiteUrl, setWebsiteUrl] = useState(prefill?.websiteUrl ?? "");
   const [instructions, setInstructions] = useState(prefill?.instructions ?? "");
   const [selectedModel, setSelectedModel] = useState<string>(
@@ -42,6 +44,7 @@ export default function ConfigForm({ models, keyStatus, onStart, prefill }: Prop
 
   const selectedModelInfo = models.find((m) => m.id === selectedModel);
   const canSubmit =
+    !disabled &&
     websiteUrl.trim().length > 0 &&
     instructions.trim().length >= 5 &&
     selectedModel.length > 0 &&
@@ -230,6 +233,7 @@ export default function ConfigForm({ models, keyStatus, onStart, prefill }: Prop
           className="btn btn-primary"
           disabled={!canSubmit}
           style={{ gap: 8, paddingRight: 20 }}
+          title={disabled ? "Daily prompt limit reached. Resets at midnight UTC." : undefined}
         >
           Start Agent Session
           <ChevronRight size={15} />
