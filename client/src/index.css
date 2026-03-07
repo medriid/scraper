@@ -24,8 +24,12 @@
   /* Step colours */
   --step-thinking: #9a9a9a;
   --step-browsing: #c8c8c8;
+  --step-fetching: #7ec8e3;
   --step-analyzing: #b8b8b8;
+  --step-discovering: #a3d9a5;
   --step-refining: #d0d0d0;
+  --step-testing: #e6c07b;
+  --step-validating: #98c379;
   --step-building: #e0e0e0;
   --step-generating: #efefef;
   --step-complete: #ffffff;
@@ -585,8 +589,12 @@ code, pre { font-family: var(--font-mono); }
 /* Step type colours */
 .step-icon--thinking { color: var(--step-thinking); }
 .step-icon--browsing { color: var(--step-browsing); }
+.step-icon--fetching { color: var(--step-fetching); }
 .step-icon--analyzing { color: var(--step-analyzing); }
+.step-icon--discovering { color: var(--step-discovering); }
 .step-icon--refining { color: var(--step-refining); }
+.step-icon--testing { color: var(--step-testing); }
+.step-icon--validating { color: var(--step-validating); }
 .step-icon--building { color: var(--step-building); }
 .step-icon--generating { color: var(--step-generating); }
 .step-icon--complete { color: var(--step-complete); }
@@ -2402,8 +2410,12 @@ code, pre { font-family: var(--font-mono); }
 
 .step-dot--thinking { color: var(--step-thinking); border-color: rgba(154,154,154,0.3); }
 .step-dot--browsing { color: var(--step-browsing); border-color: rgba(200,200,200,0.3); }
+.step-dot--fetching { color: var(--step-fetching); border-color: rgba(126,200,227,0.3); }
 .step-dot--analyzing { color: var(--step-analyzing); border-color: rgba(184,184,184,0.3); }
+.step-dot--discovering { color: var(--step-discovering); border-color: rgba(163,217,165,0.3); }
 .step-dot--refining { color: var(--step-refining); border-color: rgba(208,208,208,0.3); }
+.step-dot--testing { color: var(--step-testing); border-color: rgba(230,192,123,0.3); }
+.step-dot--validating { color: var(--step-validating); border-color: rgba(152,195,121,0.3); }
 .step-dot--building { color: var(--step-building); border-color: rgba(224,224,224,0.3); }
 .step-dot--generating { color: var(--step-generating); border-color: rgba(239,239,239,0.3); }
 .step-dot--complete { color: #5ad98a; border-color: rgba(90,217,138,0.3); background: rgba(90,217,138,0.08); }

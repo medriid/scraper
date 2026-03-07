@@ -24,12 +24,13 @@ export interface DiscoveredEndpoint {
 
 const MAX_HTML_SIZE = 512_000;
 const TRUNCATED_HTML_SIZE = 30_000;
+const MAX_REDIRECTS = 5;
 
 function doFetch(
   targetUrl: string,
   redirectCount = 0
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
-  if (redirectCount > 5) {
+  if (redirectCount > MAX_REDIRECTS) {
     return Promise.reject(new Error("Too many redirects"));
   }
 
@@ -182,30 +183,31 @@ function extractScriptSources(html: string): string[] {
 
 function extractInlineJson(html: string): string[] {
   const jsonBlocks: string[] = [];
+  const MAX_BLOCK_SIZE = 10_000;
 
-  const nextDataMatch = html.match(/<script\s+id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+  const nextDataMatch = html.match(/<script\s+id="__NEXT_DATA__"[^>]*>([^<]{1,100000})<\/script>/i);
   if (nextDataMatch) {
     jsonBlocks.push(nextDataMatch[1].trim().slice(0, 5000));
   }
 
-  const ldJsonPattern = /<script\s+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi;
+  const ldJsonPattern = /<script\s+type="application\/ld\+json"[^>]*>([^<]{1,50000})<\/script>/gi;
   let match;
   while ((match = ldJsonPattern.exec(html)) !== null) {
     jsonBlocks.push(match[1].trim().slice(0, 3000));
   }
 
   const statePatterns = [
-    /window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});?\s*(?:<\/script>|$)/i,
-    /window\.__PRELOADED_STATE__\s*=\s*(\{[\s\S]*?\});?\s*(?:<\/script>|$)/i,
-    /window\.__APP_STATE__\s*=\s*(\{[\s\S]*?\});?\s*(?:<\/script>|$)/i,
-    /window\.__DATA__\s*=\s*(\{[\s\S]*?\});?\s*(?:<\/script>|$)/i,
-    /window\.__NUXT__\s*=\s*(\{[\s\S]*?\});?\s*(?:<\/script>|$)/i,
+    /window\.__INITIAL_STATE__\s*=\s*(\{[^;]{1,100000});/i,
+    /window\.__PRELOADED_STATE__\s*=\s*(\{[^;]{1,100000});/i,
+    /window\.__APP_STATE__\s*=\s*(\{[^;]{1,100000});/i,
+    /window\.__DATA__\s*=\s*(\{[^;]{1,100000});/i,
+    /window\.__NUXT__\s*=\s*(\{[^;]{1,100000});/i,
   ];
 
   for (const pattern of statePatterns) {
     const stateMatch = html.match(pattern);
     if (stateMatch) {
-      jsonBlocks.push(stateMatch[1].trim().slice(0, 5000));
+      jsonBlocks.push(stateMatch[1].trim().slice(0, MAX_BLOCK_SIZE));
     }
   }
 

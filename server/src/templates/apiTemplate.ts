@@ -457,10 +457,10 @@ const CONFIG = {
 } as const;
 
 const AUTH: AuthConfig = {
-  email: process.env.AUTH_EMAIL ?? "${credentials?.email ?? ""}",
+  email: process.env.AUTH_EMAIL ?? "",
   password: process.env.AUTH_PASSWORD ?? "",
-  token: process.env.AUTH_TOKEN ?? "${credentials?.token ?? ""}",
-  cookies: process.env.AUTH_COOKIES ?? "${credentials?.cookies ?? ""}",
+  token: process.env.AUTH_TOKEN ?? "",
+  cookies: process.env.AUTH_COOKIES ?? "",
 };
 
 const SCHEMA_HINT = ${schemaStr} as const;
@@ -622,10 +622,10 @@ CONFIG = {
 }
 
 AUTH = {
-    "email": os.environ.get("AUTH_EMAIL", "${credentials?.email ?? ""}"),
+    "email": os.environ.get("AUTH_EMAIL", ""),
     "password": os.environ.get("AUTH_PASSWORD", ""),
-    "token": os.environ.get("AUTH_TOKEN", "${credentials?.token ?? ""}"),
-    "cookies": os.environ.get("AUTH_COOKIES", "${credentials?.cookies ?? ""}"),
+    "token": os.environ.get("AUTH_TOKEN", ""),
+    "cookies": os.environ.get("AUTH_COOKIES", ""),
 }
 
 

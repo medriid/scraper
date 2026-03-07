@@ -186,7 +186,7 @@ export default function ConfigForm({ models, keyStatus, onStart, prefill, disabl
               </div>
               <p style={{ fontSize: "0.75rem", color: "var(--text-4)", marginBottom: "var(--space-md)", lineHeight: 1.5 }}>
                 Provide at least one: email/password for login-based auth, an API token, or session cookies. 
-                Credentials are only used during code generation and never stored.
+                Credentials are used to generate the scraper code. The generated script reads them from environment variables at runtime.
               </p>
               <div className="form-group" style={{ marginBottom: "var(--space-sm)" }}>
                 <label className="form-label" style={{ fontSize: "0.75rem" }}>Email</label>
