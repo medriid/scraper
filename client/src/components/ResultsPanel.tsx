@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { RotateCcw, Download } from "lucide-react";
-import type { SessionResult } from "../types";
+import type { SessionResult, OutputLanguage } from "../types";
 import CodePreview from "./CodePreview";
 import SchemaViewer from "./SchemaViewer";
 
@@ -10,14 +10,17 @@ interface Props {
   error: string | null;
   codeStream: string;
   onReset: () => void;
+  language: OutputLanguage;
 }
 
 type Tab = "schema" | "prompt" | "analysis" | "file";
 
-export default function ResultsPanel({ result, error, codeStream, onReset }: Props) {
+export default function ResultsPanel({ result, error, codeStream, onReset, language }: Props) {
   const [tab, setTab] = useState<Tab>("file");
 
   const apiFile = result?.apiFile ?? codeStream;
+  const ext = language === "python" ? "py" : "ts";
+  const filename = `scraper.${ext}`;
 
   function handleDownload() {
     if (!apiFile) return;
@@ -25,7 +28,7 @@ export default function ResultsPanel({ result, error, codeStream, onReset }: Pro
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "scraper.ts";
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -61,7 +64,7 @@ export default function ResultsPanel({ result, error, codeStream, onReset }: Pro
                 onClick={() => setTab(t)}
               >
                 {t === "file"
-                  ? "scraper.ts"
+                  ? filename
                   : t === "schema"
                   ? "JSON Schema"
                   : t === "prompt"
@@ -82,7 +85,7 @@ export default function ResultsPanel({ result, error, codeStream, onReset }: Pro
               >
                 <CodePreview
                   code={apiFile}
-                  filename="scraper.ts"
+                  filename={filename}
                   streaming={false}
                   maxHeight={520}
                   showCopy
@@ -137,7 +140,7 @@ export default function ResultsPanel({ result, error, codeStream, onReset }: Pro
         >
           <CodePreview
             code={codeStream}
-            filename="scraper.ts"
+            filename={filename}
             streaming={false}
             maxHeight={520}
             showCopy
@@ -150,7 +153,7 @@ export default function ResultsPanel({ result, error, codeStream, onReset }: Pro
         {apiFile && (
           <button className="btn btn-secondary" onClick={handleDownload}>
             <Download size={14} />
-            Download scraper.ts
+            Download {filename}
           </button>
         )}
         <button className="btn btn-secondary" onClick={onReset}>

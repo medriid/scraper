@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { BookOpen, ExternalLink, Play, Clock, ChevronRight, Search } from "lucide-react";
+import { BookOpen, ExternalLink, Play, Clock, ChevronRight, Search, Download, Code } from "lucide-react";
+import CodePreview from "./CodePreview";
 
 interface LibrarySession {
   id: string;
@@ -8,6 +9,7 @@ interface LibrarySession {
   instructions: string;
   model_id: string;
   created_at: string;
+  generated_api_file?: string | null;
 }
 
 interface Props {
@@ -175,6 +177,27 @@ export default function ScraperLibrary({ token, onRerun }: Props) {
                         <Play size={12} />
                         Run again
                       </button>
+                      {s.generated_api_file && (
+                        <button
+                          className="btn btn-secondary"
+                          style={{ fontSize: "0.82rem", gap: 6, padding: "7px 14px" }}
+                          onClick={() => {
+                            const code = s.generated_api_file!;
+                            const isPy = code.trimStart().startsWith("import json") || code.trimStart().startsWith("from ");
+                            const ext = isPy ? "py" : "ts";
+                            const blob = new Blob([code], { type: "text/plain" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `scraper-${new Date(s.created_at).toISOString().slice(0, 10)}.${ext}`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                        >
+                          <Download size={12} />
+                          Download code
+                        </button>
+                      )}
                       <a
                         href={s.website_url}
                         target="_blank"
@@ -186,6 +209,22 @@ export default function ScraperLibrary({ token, onRerun }: Props) {
                         Visit site
                       </a>
                     </div>
+
+                    {s.generated_api_file && (
+                      <div style={{ marginTop: "var(--space-md)" }}>
+                        <div className="library-detail-label" style={{ marginBottom: "var(--space-sm)", display: "flex", alignItems: "center", gap: 6 }}>
+                          <Code size={12} />
+                          Generated Code
+                        </div>
+                        <CodePreview
+                          code={s.generated_api_file}
+                          filename="scraper"
+                          streaming={false}
+                          maxHeight={300}
+                          showCopy
+                        />
+                      </div>
+                    )}
                   </motion.div>
                 )}
               </AnimatePresence>

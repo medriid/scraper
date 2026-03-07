@@ -101,6 +101,7 @@ export function startAgentSession(
   websiteUrl: string,
   instructions: string,
   modelId: string,
+  language: string,
   onStep: (step: import("../types").AgentStep) => void,
   onCodeChunk: (chunk: string) => void,
   onDone: (sessionId: string | null) => void,
@@ -116,7 +117,7 @@ export function startAgentSession(
     const res = await fetch(`${BASE}/scraper/start`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ websiteUrl, instructions, modelId }),
+      body: JSON.stringify({ websiteUrl, instructions, modelId, language }),
     });
 
     if (!res.ok || !res.body) {

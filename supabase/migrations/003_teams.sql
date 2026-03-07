@@ -19,37 +19,7 @@ create index if not exists teams_owner_id_idx on public.teams (owner_id);
 
 alter table public.teams enable row level security;
 
--- Service role has full access
-create policy "service_role full access on teams"
-  on public.teams
-  as permissive
-  for all
-  to service_role
-  using (true)
-  with check (true);
-
--- Owners can manage their own teams
-create policy "team owners full access"
-  on public.teams
-  as permissive
-  for all
-  to authenticated
-  using (owner_id = auth.uid())
-  with check (owner_id = auth.uid());
-
--- Members can view teams they belong to
-create policy "team members can view"
-  on public.teams
-  as permissive
-  for select
-  to authenticated
-  using (
-    id in (
-      select team_id from public.team_members where user_id = auth.uid()
-    )
-  );
-
--- ─── Team Members ─────────────────────────────────────────────────────────────
+-- ─── Team Members (created before teams RLS policies that reference it) ───────
 create table if not exists public.team_members (
   id uuid primary key default gen_random_uuid(),
   team_id uuid not null references public.teams(id) on delete cascade,
@@ -65,7 +35,7 @@ create index if not exists team_members_user_id_idx on public.team_members (user
 
 alter table public.team_members enable row level security;
 
--- Service role has full access
+-- Service role has full access on team_members
 create policy "service_role full access on team_members"
   on public.team_members
   as permissive
@@ -98,3 +68,34 @@ create policy "members view own membership"
   for select
   to authenticated
   using (user_id = auth.uid());
+
+-- ─── Teams RLS policies ──────────────────────────────────────────────────────
+-- Service role has full access
+create policy "service_role full access on teams"
+  on public.teams
+  as permissive
+  for all
+  to service_role
+  using (true)
+  with check (true);
+
+-- Owners can manage their own teams
+create policy "team owners full access"
+  on public.teams
+  as permissive
+  for all
+  to authenticated
+  using (owner_id = auth.uid())
+  with check (owner_id = auth.uid());
+
+-- Members can view teams they belong to
+create policy "team members can view"
+  on public.teams
+  as permissive
+  for select
+  to authenticated
+  using (
+    id in (
+      select team_id from public.team_members where user_id = auth.uid()
+    )
+  );

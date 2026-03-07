@@ -35,10 +35,13 @@ export type SessionPhase =
   | "complete"
   | "error";
 
+export type OutputLanguage = "typescript" | "python";
+
 export interface SessionConfig {
   websiteUrl: string;
   instructions: string;
   modelId: string;
+  language: OutputLanguage;
 }
 
 export interface SessionResult {
