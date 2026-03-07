@@ -374,6 +374,7 @@ RULES:
         ? generateApiFileTemplate(websiteUrl, schema, instructions)
         : generatePyFileTemplate(websiteUrl, schema, instructions));
 
+    const TEMPLATE_PREVIEW_LINES = 60;
     const enhancePrompt = `You are a senior ${langLabel} web scraping engineer. Write a complete, production-ready ${langLabel} script that extracts structured data from the target website.
 
 OUTPUT RULES:
@@ -451,7 +452,7 @@ Use the actual auth endpoints discovered above to authenticate, then extract per
 
 REFERENCE TEMPLATE (use as structural guide, but replace ALL generic selectors with real ones from the HTML above):
 \`\`\`${isTs ? "typescript" : "python"}
-${baseFile.split("\n").slice(0, 60).join("\n")}
+${baseFile.split("\n").slice(0, TEMPLATE_PREVIEW_LINES).join("\n")}
 ... (template continues with safeExtract, extractImages, extractGenres, fillMissingFields, file output)
 \`\`\`
 
@@ -478,9 +479,11 @@ Write the COMPLETE ${langLabel} file now. Use REAL selectors from the HTML above
       }
       let enhanced = streamParts.join("");
       if (enhanced.length > 500) {
+        const OPENING_FENCE = /^```(?:typescript|ts|python|py|javascript|js)?\s*\n?/gm;
+        const CLOSING_FENCE = /\n?```\s*$/gm;
         enhanced = enhanced
-          .replace(/^```(?:typescript|ts|python|py|javascript|js)?\s*\n?/gm, "")
-          .replace(/\n?```\s*$/gm, "")
+          .replace(OPENING_FENCE, "")
+          .replace(CLOSING_FENCE, "")
           .trim();
         if (enhanced.length > 500) {
           apiFileContent = enhanced;
