@@ -2,7 +2,7 @@ import { Response } from "express";
 import { chatCompletion, streamCompletion } from "./aiService.js";
 import { generateApiFileTemplate, generatePyFileTemplate, generateDataApiTemplate, generateDataApiPyTemplate } from "../templates/apiTemplate.js";
 import { updateSession } from "./supabaseService.js";
-import { fetchAndAnalyzePage, buildPageReport, FetchedPage, crawlSiteForDiscovery, BotCrawlResult } from "./pageFetcher.js";
+import { fetchAndAnalyzePage, buildPageReport, FetchedPage, crawlSiteForDiscovery, CrawledPageReport } from "./pageFetcher.js";
 
 export interface AgentStep {
   type:
@@ -31,9 +31,154 @@ export interface AuthCredentials {
   cookies?: string;
 }
 
+interface AgentKnowledge {
+  fetchedPages: FetchedPage[];
+  crawledPages: CrawledPageReport[];
+  interceptedApis: Array<{ url: string; sampleData: string; method: string }>;
+  discoveredDetailUrls: string[];
+  crawlReports: string[];
+  visitedUrls: Set<string>;
+  analysis: string;
+  schema: Record<string, unknown> | null;
+}
+
 function sendSSE(res: Response, event: string, data: unknown): void {
   const payload = typeof data === "string" ? data : JSON.stringify(data);
   res.write(`event: ${event}\ndata: ${payload}\n\n`);
+}
+
+function buildKnowledgeSummary(k: AgentKnowledge): string {
+  const lines: string[] = [];
+
+  lines.push(`=== CRAWLED PAGES (${k.crawledPages.length}) ===`);
+  for (const p of k.crawledPages) {
+    lines.push(`\nPage: ${p.url}`);
+    lines.push(`Title: ${p.title}`);
+    if (Object.keys(p.sampleTexts).length > 0) {
+      lines.push(`Sample data:`);
+      for (const [field, text] of Object.entries(p.sampleTexts)) {
+        lines.push(`  ${field}: "${text}"`);
+      }
+    }
+    const meaningful = p.elements.filter(
+      (e) => e.count > 0 && (e.sampleText || e.sampleHref || e.sampleSrc)
+    );
+    if (meaningful.length > 0) {
+      lines.push(`Discovered DOM elements:`);
+      for (const e of meaningful.slice(0, 25)) {
+        let line = `  "${e.selector}" → ${e.count}×, <${e.tagName}>`;
+        if (e.className) line += ` class="${e.className.slice(0, 50)}"`;
+        if (e.sampleText) line += `, text: "${e.sampleText.slice(0, 80)}"`;
+        if (e.sampleHref) line += `, href: "${e.sampleHref}"`;
+        if (e.sampleSrc) line += `, src: "${e.sampleSrc}"`;
+        lines.push(line);
+      }
+    }
+    if (p.linkPatterns.length > 0) {
+      lines.push(`Content links (${p.linkPatterns.length}):`);
+      for (const link of p.linkPatterns.slice(0, 5)) {
+        lines.push(`  ${link}`);
+      }
+    }
+  }
+
+  if (k.interceptedApis.length > 0) {
+    lines.push(`\n=== INTERCEPTED APIs (${k.interceptedApis.length}) ===`);
+    for (const api of k.interceptedApis.slice(0, 5)) {
+      lines.push(`[${api.method}] ${api.url}`);
+      lines.push(`  Sample: ${api.sampleData.slice(0, 500)}`);
+    }
+  }
+
+  if (k.discoveredDetailUrls.length > 0) {
+    lines.push(`\n=== DISCOVERED URLs (${k.discoveredDetailUrls.length}) ===`);
+    for (const url of k.discoveredDetailUrls.slice(0, 10)) {
+      lines.push(`  ${url}`);
+    }
+  }
+
+  for (const fp of k.fetchedPages) {
+    if (fp.inlineJsonData.length > 0) {
+      lines.push(`\n=== INLINE DATA from ${fp.url} ===`);
+      for (const d of fp.inlineJsonData.slice(0, 3)) {
+        lines.push(d.slice(0, 1500));
+      }
+    }
+    const liveApis = fp.probedEndpoints.filter((ep) => ep.isJsonApi);
+    if (liveApis.length > 0) {
+      lines.push(`\n=== LIVE JSON APIs from ${fp.url} ===`);
+      for (const ep of liveApis.slice(0, 3)) {
+        lines.push(`[${ep.method}] ${ep.url} → ${ep.statusCode}`);
+        lines.push(`  Sample: ${ep.sampleData.slice(0, 800)}`);
+      }
+    }
+  }
+
+  if (k.schema) {
+    lines.push(`\n=== CURRENT SCHEMA ===`);
+    lines.push(JSON.stringify(k.schema, null, 2));
+  }
+
+  return lines.join("\n");
+}
+
+function buildElementsReport(crawledPages: CrawledPageReport[]): string {
+  return crawledPages
+    .map((p) => {
+      const elLines = p.elements
+        .filter((e) => e.count > 0 && (e.sampleText || e.sampleHref || e.sampleSrc))
+        .slice(0, 25)
+        .map((e) => {
+          let line = `  "${e.selector}" → ${e.count}×, <${e.tagName}>`;
+          if (e.className) line += ` class="${e.className.slice(0, 50)}"`;
+          if (e.sampleText) line += `, text: "${e.sampleText.slice(0, 80)}"`;
+          if (e.sampleHref) line += `, href: "${e.sampleHref}"`;
+          if (e.sampleSrc) line += `, src: "${e.sampleSrc}"`;
+          return line;
+        })
+        .join("\n");
+      return elLines ? `Page ${p.url}:\n${elLines}` : "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function buildCrawlSampleData(crawledPages: CrawledPageReport[]): string {
+  return crawledPages
+    .map((p) => {
+      const texts = Object.entries(p.sampleTexts)
+        .map(([k, v]) => `${k}: "${v}"`)
+        .join(", ");
+      return texts ? `Page ${p.url}: ${texts}` : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function mergeDiscovery(
+  knowledge: AgentKnowledge,
+  result: {
+    pages: CrawledPageReport[];
+    allInterceptedApis: Array<{ url: string; sampleData: string; method: string; statusCode: number; contentType: string; isJsonApi: boolean }>;
+    discoveredDetailUrls: string[];
+    siteStructure: string;
+  }
+): void {
+  knowledge.crawledPages.push(...result.pages);
+  knowledge.crawlReports.push(result.siteStructure);
+  for (const u of result.discoveredDetailUrls) {
+    if (!knowledge.discoveredDetailUrls.includes(u)) {
+      knowledge.discoveredDetailUrls.push(u);
+    }
+  }
+  for (const api of result.allInterceptedApis) {
+    if (!knowledge.interceptedApis.some((a) => a.url === api.url)) {
+      knowledge.interceptedApis.push({ url: api.url, sampleData: api.sampleData, method: api.method });
+    }
+  }
+  for (const p of result.pages) {
+    knowledge.visitedUrls.add(p.url);
+  }
 }
 
 export async function runAgentSession(
@@ -57,49 +202,44 @@ export async function runAgentSession(
     sendSSE(res, "step", step);
   };
 
+  const knowledge: AgentKnowledge = {
+    fetchedPages: [],
+    crawledPages: [],
+    interceptedApis: [],
+    discoveredDetailUrls: [],
+    crawlReports: [],
+    visitedUrls: new Set<string>(),
+    analysis: "",
+    schema: null,
+  };
+
+  const MAX_ITERATIONS = 6;
+
   try {
-    // ── Step 1: Actually fetch the page (with retry + alternative URLs) ───────
+    // ── Step 1: Initial page fetch ──────────────────────────────────────────
     emit({
       type: "fetching",
       message: "Fetching target website",
       detail: `Making real HTTP request to ${websiteUrl}…`,
     });
 
-    let pageReport: string;
-    let endpointCount = 0;
-    let fetchedHtmlSnippet = "";
-    let discoveredEndpointsText = "";
-    let inlineDataText = "";
-    let probedApiText = "";
-    let isCloudflareBlocked = false;
-    let liveApiEndpoints: { url: string; sampleData: string }[] = [];
-
     const tryFetchPage = async (url: string): Promise<FetchedPage | null> => {
-      try {
-        return await fetchAndAnalyzePage(url);
-      } catch {
-        return null;
-      }
+      try { return await fetchAndAnalyzePage(url); } catch { return null; }
     };
 
     let page = await tryFetchPage(websiteUrl);
+    let isCloudflareBlocked = false;
 
     if (page && page.isCloudflareBlocked) {
       isCloudflareBlocked = true;
       emit({
         type: "browsing",
         message: "Cloudflare protection detected",
-        detail: "Site is behind Cloudflare — generated scraper will use Playwright browser to bypass this. Trying alternative URLs…",
+        detail: "Will use Playwright to bypass. Trying alternative URLs…",
       });
-
       for (const altUrl of page.alternativeUrls.slice(0, 4)) {
         const altPage = await tryFetchPage(altUrl);
         if (altPage && !altPage.isCloudflareBlocked && altPage.html.length > 1000) {
-          emit({
-            type: "browsing",
-            message: `Found accessible page: ${altUrl}`,
-            detail: `Status ${altPage.statusCode} · Merging discovered data…`,
-          });
           page.discoveredEndpoints.push(...altPage.discoveredEndpoints);
           page.probedEndpoints.push(...altPage.probedEndpoints);
           page.inlineJsonData.push(...altPage.inlineJsonData);
@@ -113,408 +253,407 @@ export async function runAgentSession(
       }
     }
 
-    if (page && (page.html.length < 500 || page.discoveredEndpoints.length === 0) && !page.isCloudflareBlocked) {
-      emit({
-        type: "browsing",
-        message: "Minimal data found — probing alternative URLs",
-        detail: "Checking homepage and common API paths for more data…",
-      });
-
-      for (const altUrl of (page.alternativeUrls ?? []).slice(0, 5)) {
-        const altPage = await tryFetchPage(altUrl);
-        if (altPage && altPage.html.length > page.html.length) {
-          page.discoveredEndpoints.push(...altPage.discoveredEndpoints);
-          page.probedEndpoints.push(...altPage.probedEndpoints);
-          page.inlineJsonData.push(...altPage.inlineJsonData);
-          if (altPage.html.length > page.html.length) {
-            page.html = altPage.html;
-            page.truncatedHtml = altPage.truncatedHtml;
-          }
-        }
-      }
-    }
-
     if (page) {
-      pageReport = buildPageReport(page);
-      endpointCount = page.discoveredEndpoints.length;
-      fetchedHtmlSnippet = page.truncatedHtml;
-      discoveredEndpointsText = page.discoveredEndpoints
-        .map((ep) => `[${ep.method}] ${ep.url} (source: ${ep.source})`)
-        .join("\n");
-      inlineDataText = page.inlineJsonData.map((d, i) => `[Block ${i + 1}]: ${d.slice(0, 2000)}`).join("\n");
-
-      liveApiEndpoints = page.probedEndpoints
-        .filter((ep) => ep.isJsonApi)
-        .map((ep) => ({ url: ep.url, sampleData: ep.sampleData }));
-
-      probedApiText = page.probedEndpoints
-        .map((ep) => {
-          let line = `[${ep.method}] ${ep.url} → Status ${ep.statusCode} (${ep.contentType})`;
-          if (ep.isJsonApi) {
-            line += `\n  ✅ LIVE JSON API — Sample: ${ep.sampleData.slice(0, 1000)}`;
-          }
-          return line;
-        })
-        .join("\n");
-
-      const liveApiCount = liveApiEndpoints.length;
+      knowledge.fetchedPages.push(page);
+      knowledge.visitedUrls.add(websiteUrl);
+      const liveApiCount = page.probedEndpoints.filter((ep) => ep.isJsonApi).length;
       emit({
         type: "browsing",
         message: "Page fetched successfully",
-        detail: `Status ${page.statusCode} · ${endpointCount} endpoint(s) in HTML · ${liveApiCount} live JSON API(s) confirmed · ${page.inlineJsonData.length} inline data blocks${isCloudflareBlocked ? " · ⚠️ Cloudflare detected" : ""}`,
-        data: { endpointCount },
+        detail: `Status ${page.statusCode} · ${page.discoveredEndpoints.length} endpoint(s) · ${liveApiCount} live API(s)${isCloudflareBlocked ? " · ⚠️ Cloudflare" : ""}`,
       });
     } else {
-      const fetchMsg = "All fetch attempts failed";
-      pageReport = `FETCH FAILED: ${fetchMsg}\nURL: ${websiteUrl}\nThe page could not be fetched directly. The scraper MUST use Playwright (headless browser) to load this page — plain HTTP requests will not work.`;
-      fetchedHtmlSnippet = "";
       isCloudflareBlocked = true;
-
       emit({
         type: "browsing",
-        message: "Direct fetch failed — site requires browser rendering",
-        detail: "Generated scraper will use Playwright to navigate the site with a real browser.",
+        message: "Direct fetch failed — will use Playwright",
+        detail: "Site requires browser rendering.",
       });
     }
 
     await sleep(300);
 
-    // ── Step 2: Deep analysis with REAL page data ────────────────────────────
-    emit({
-      type: "thinking",
-      message: "AI analyzing real page data",
-      detail: "Examining fetched HTML, discovered endpoints, inline JSON, and scripts…",
-    });
-
-    const analysisPrompt = `You are an expert web scraping and crawling engineer. You MUST base your analysis ENTIRELY on the REAL page data provided below. Do NOT guess or assume anything about the website — only describe what you can see in the actual fetched data.
-
-CRITICAL: You are a PERSISTENT crawling engineer. Your PRIMARY job is to figure out how to CRAWL this website thoroughly — navigating from page to page, following links, discovering content. Crawling means: loading the starting page, finding all navigable links (listing pages, detail pages, category pages, pagination), and visiting each one to extract data. NEVER give up. Always recommend crawling the homepage, following links, checking sitemaps, and intercepting network requests.
-
-Website URL: ${websiteUrl}
-User Instructions: ${instructions}
-${isDataApi ? `\nExtraction Mode: DATA API (authenticated user data extraction)\nUser provided credentials: ${credentials?.email ? "email" : ""}${credentials?.password ? ", password" : ""}${credentials?.token ? ", token/API key" : ""}${credentials?.cookies ? ", cookies" : ""}` : "Extraction Mode: SCRAPER (public data extraction)"}
-${isCloudflareBlocked ? "\n⚠️ CLOUDFLARE PROTECTION DETECTED: The site blocks plain HTTP requests. The scraper MUST use Playwright (headless browser) for ALL requests. Do NOT suggest using fetch/axios/requests directly — they will be blocked." : ""}
-
-=== ACTUAL FETCHED PAGE DATA ===
-${pageReport}
-=== END PAGE DATA ===
-
-${probedApiText ? `=== PROBED API ENDPOINTS (actual HTTP responses received) ===\n${probedApiText}\n=== END PROBED ENDPOINTS ===\n\nIMPORTANT: The above are REAL responses from actual API endpoint probes. Any endpoint marked ✅ LIVE JSON API is a confirmed working API that returns structured JSON data.` : ""}
-
-${liveApiEndpoints.length > 0 ? `\n🎯 LIVE APIs: ${liveApiEndpoints.length} LIVE JSON API(s) were confirmed. These can supplement crawling.` : ""}
-
-Based ONLY on the actual data above, provide your analysis:
-
-1. SITE TYPE: What kind of site is this based on the HTML, meta tags, and content you can see?
-
-2. CRAWLING STRUCTURE (MOST IMPORTANT):
-   - What is the site's navigation structure? (homepage → categories → listings → detail pages)
-   - What links on the current page lead to content pages?
-   - What CSS selectors identify navigable links to content?
-   - Is there pagination? What selectors/patterns indicate next pages?
-   - Are there category/section links that lead to more content?
-   - What is the URL pattern for detail pages?
-
-3. API ENDPOINTS FOUND: List every API endpoint you can see in the fetched data.
-
-4. INLINE DATA: Describe any __NEXT_DATA__, ld+json, window.__STATE__, or other inline JSON/data.
-
-5. HTML STRUCTURE: Describe the actual DOM structure — repeating elements, CSS classes/IDs, data attributes for extraction.
-
-6. AUTHENTICATION: ${isDataApi ? "Describe how authentication works. What auth endpoints exist?" : "Are there any auth walls? Does the page show public data?"}
-
-7. RECOMMENDED CRAWLING STRATEGY (PRIORITY ORDER):
-   a. CRAWL with Playwright — load pages in a real browser, follow links to detail pages, extract data from each page
-   b. INTERCEPT network requests during crawling — use page.on('response') to catch API calls the frontend makes while browsing
-   c. If LIVE JSON APIs were confirmed → supplement crawling with direct API calls via page.evaluate(fetch())
-   d. HOMEPAGE CRAWL — always start from the homepage if the target URL has limited content, follow all content links
-   e. SITEMAP — check /sitemap.xml for a complete list of pages to crawl
-   f. DOM extraction as the primary per-page extraction method during crawling
-
-8. ALTERNATIVE CRAWLING APPROACHES:
-   - List backup crawling paths (different entry pages, category pages, search pages)
-   - Suggest URL patterns for programmatic crawling (e.g., /page/1, /page/2)
-   - Identify the homepage URL and category/section pages
-
-IMPORTANT: Be specific. Reference actual URLs, selectors, and data. NEVER suggest giving up — always provide at least 3 crawling strategies.`;
-
-    const analysis = await chatCompletion(modelId, [
-      { role: "user", content: analysisPrompt },
-    ], 0.2, 4096);
-
-    emit({
-      type: "analyzing",
-      message: "Website analysis complete",
-      detail: analysis.slice(0, 400) + (analysis.length > 400 ? "…" : ""),
-      data: { analysis },
-    });
-
-    await sleep(300);
-
-    // ── Step 3: Bot Crawl — actually visit pages with Playwright ─────────────
+    // ── Step 2: Initial bot crawl ───────────────────────────────────────────
     emit({
       type: "crawling",
       message: "Bot crawling site with Playwright",
-      detail: "Launching headless browser to visit pages, discover real selectors, and capture live data…",
+      detail: "Launching headless browser to dynamically discover page structure and data…",
     });
 
-    let botCrawlResult: BotCrawlResult | null = null;
-    let botCrawlReport = "";
-
     try {
-      botCrawlResult = await crawlSiteForDiscovery(
-        websiteUrl,
-        page ? page.linkUrls : [],
-        3
-      );
-
-      botCrawlReport = botCrawlResult.siteStructure;
-
-      const crawledPageCount = botCrawlResult.pages.length;
-      const detailUrlCount = botCrawlResult.discoveredDetailUrls.length;
-      const interceptedApiCount = botCrawlResult.allInterceptedApis.length;
-
+      const crawlResult = await crawlSiteForDiscovery(websiteUrl, page ? page.linkUrls : [], 3);
+      mergeDiscovery(knowledge, crawlResult);
       emit({
         type: "crawling",
-        message: `Bot crawled ${crawledPageCount} page(s)`,
-        detail: `Found ${detailUrlCount} detail link(s) · ${interceptedApiCount} API call(s) intercepted · Discovered real selectors and data`,
+        message: `Bot crawled ${crawlResult.pages.length} page(s)`,
+        detail: `${crawlResult.discoveredDetailUrls.length} content link(s) · ${crawlResult.allInterceptedApis.length} API(s) intercepted`,
       });
-
-      if (crawledPageCount === 0 || (detailUrlCount === 0 && interceptedApiCount === 0)) {
-        emit({
-          type: "crawling",
-          message: "Insufficient data — crawling homepage",
-          detail: "Target page had limited content. Crawling the homepage for more data…",
-        });
-
-        const homeUrl = new URL("/", websiteUrl).href;
-        if (homeUrl !== websiteUrl) {
-          try {
-            const homeCrawl = await crawlSiteForDiscovery(homeUrl, [], 2);
-            if (homeCrawl.pages.length > 0) {
-              botCrawlResult.pages.push(...homeCrawl.pages);
-              botCrawlResult.allInterceptedApis.push(...homeCrawl.allInterceptedApis);
-              botCrawlResult.discoveredDetailUrls.push(...homeCrawl.discoveredDetailUrls);
-              botCrawlReport += "\n\n=== HOMEPAGE CRAWL ===\n" + homeCrawl.siteStructure;
-
-              emit({
-                type: "crawling",
-                message: `Homepage crawl found ${homeCrawl.pages.length} more page(s)`,
-                detail: `${homeCrawl.discoveredDetailUrls.length} detail link(s) · ${homeCrawl.allInterceptedApis.length} API(s) intercepted`,
-              });
-            }
-          } catch {}
-        }
-      }
     } catch (err) {
       emit({
         type: "crawling",
         message: "Bot crawl encountered issues",
-        detail: `Continuing with initial page data. Error: ${err instanceof Error ? err.message : "Unknown"}`,
+        detail: `Error: ${err instanceof Error ? err.message : "Unknown"}`,
       });
     }
 
     await sleep(300);
 
-    // ── Step 4: Schema generation based on REAL crawl data ───────────────────
+    // ── Step 3: Initial AI analysis ─────────────────────────────────────────
     emit({
       type: "thinking",
-      message: "Generating data schema from real crawl data",
-      detail: "Inferring fields from actual data discovered by the bot crawler…",
+      message: "AI analyzing crawl findings",
+      detail: "Examining discovered DOM elements, intercepted APIs, and page structure…",
     });
 
-    const liveApiEndpointsFromCrawl = botCrawlResult?.allInterceptedApis ?? [];
-    const allLiveApis = [...liveApiEndpoints, ...liveApiEndpointsFromCrawl];
-    const crawlSampleData = botCrawlResult?.pages
-      .map((p) => {
-        const texts = Object.entries(p.sampleTexts)
-          .map(([k, v]) => `${k}: "${v}"`)
-          .join(", ");
-        return texts ? `Page ${p.url}: ${texts}` : "";
-      })
-      .filter(Boolean)
-      .join("\n") ?? "";
+    const pageReport = page ? buildPageReport(page) : "No page data — all fetches failed.";
 
-    const liveApiSample = allLiveApis.length > 0
-      ? `\n\nLive API sample data:\n${allLiveApis[0].sampleData.slice(0, 2000)}\n\nUse the actual field names from this API response.`
-      : "";
+    const analysisPrompt = `You are an expert web scraping engineer. Analyze the REAL data gathered from this website.
 
-    const schemaPrompt = `Based on the REAL data found by crawling this website with a headless browser, generate a JSON schema that describes each record the scraper will extract.
+A bot crawler visited the site with Playwright and dynamically scanned the DOM — it discovered every CSS class, data attribute, and HTML element on each page. This is raw, unfiltered discovery. Your job is to interpret what was found and decide what's useful for extracting the user's requested data.
 
 Website URL: ${websiteUrl}
-Instructions: ${instructions}
-Analysis: ${analysis.slice(0, 1500)}
+User Instructions: ${instructions}
+${isDataApi ? `Mode: DATA API (authenticated)\nCredentials: ${credentials?.email ? "email" : ""}${credentials?.password ? ", password" : ""}${credentials?.token ? ", token" : ""}${credentials?.cookies ? ", cookies" : ""}` : "Mode: SCRAPER (public data)"}
+${isCloudflareBlocked ? "\n⚠️ CLOUDFLARE — must use Playwright." : ""}
 
-=== REAL DATA DISCOVERED BY BOT CRAWLER ===
-${crawlSampleData || "Bot crawler did not extract sample text data."}
+=== BOT CRAWLER FINDINGS ===
+${buildKnowledgeSummary(knowledge)}
 
-=== BOT CRAWL STRUCTURAL REPORT ===
-${botCrawlReport.slice(0, 4000)}
+=== INITIAL HTTP FETCH REPORT ===
+${pageReport.slice(0, 6000)}
 
-IMPORTANT: The schema fields MUST correspond to actual data visible in the crawled pages. Do not include fields that don't exist on this website.
+Based ONLY on the actual data above, analyze:
+1. SITE TYPE: What kind of site is this?
+2. USEFUL ELEMENTS: Which of the discovered DOM elements/classes contain the data the user wants? Map them to likely data fields.
+3. REPEATING PATTERNS: Which elements appear multiple times (indicating lists of items)?
+4. CONTENT LINKS: Which discovered links lead to detail/content pages?
+5. MISSING DATA: What does the user want that we haven't found yet? What pages should we crawl next?
+6. APIs: Any intercepted JSON APIs with useful data?
+7. CONFIDENCE: How confident are you that you can build a working scraper from this data? What's missing?
 
-If the bot crawler found sample texts (title, description, genre, rating, etc.), use those exact field names.
-If the bot crawler found specific data values, those confirm what fields exist on the site.
+Be specific — reference the exact selectors, class names, and data values discovered.`;
 
-ALWAYS include at least these baseline fields appropriate to the content type:
-- A title/name field
-- A url/link field
-- An image/thumbnail field (if the site has images)
-- A description/summary field
-- Any category/tag/genre fields
-
-${inlineDataText ? `Inline data found:\n${inlineDataText.slice(0, 2000)}\n\nUse the actual field names from this data where possible.` : ""}${liveApiSample}
-
-Return ONLY a valid JSON object representing one extracted record. Use camelCase field names. No explanation, no markdown fences.`;
-
-    const schemaRaw = await chatCompletion(modelId, [
-      { role: "user", content: schemaPrompt },
-    ], 0.2, 1024);
-
-    let schema: Record<string, unknown> = {};
-    try {
-      const jsonMatch = schemaRaw.match(/\{[\s\S]*\}/);
-      schema = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
-    } catch {
-      schema = {};
-    }
-
-    const schemaFieldCount = Object.keys(schema).length;
-    const hasNonEmptyValues = Object.values(schema).some((v) => v !== "" && v !== null && v !== undefined);
-
-    if (schemaFieldCount < 3 || !hasNonEmptyValues) {
-      emit({
-        type: "crawling",
-        message: "Schema too sparse — re-analyzing with crawl findings",
-        detail: `Only ${schemaFieldCount} field(s) found. Re-generating schema based on user instructions and bot crawl data…`,
-      });
-
-      const retrySchemaPrompt = `The initial page analysis did not find enough structured data. Generate a comprehensive JSON schema based on:
-
-1. The website type (URL: ${websiteUrl})
-2. The user's extraction goal: "${instructions}"
-3. Real data found by crawling: ${crawlSampleData.slice(0, 1000) || "No sample data available"}
-4. Common data fields for this type of site
-
-The scraper will CRAWL the site using Playwright. Generate a RICH schema with at least 6-8 fields.
-
-Return ONLY a valid JSON object. Use camelCase. No explanation, no markdown fences.`;
-
-      const retrySchemaRaw = await chatCompletion(modelId, [
-        { role: "user", content: retrySchemaPrompt },
-      ], 0.3, 1024);
-
-      try {
-        const jsonMatch = retrySchemaRaw.match(/\{[\s\S]*\}/);
-        const retrySchema = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
-        if (retrySchema && Object.keys(retrySchema).length > schemaFieldCount) {
-          schema = retrySchema;
-        }
-      } catch {}
-
-      if (Object.keys(schema).length < 3) {
-        schema = { title: "", url: "", description: "", image: "", tags: [] };
-      }
-    }
+    knowledge.analysis = await chatCompletion(modelId, [
+      { role: "user", content: analysisPrompt },
+    ], 0.2, 3072);
 
     emit({
       type: "analyzing",
-      message: "JSON schema generated",
-      detail: `${Object.keys(schema).length} fields identified`,
-      data: { schema },
+      message: "Analysis complete",
+      detail: knowledge.analysis.slice(0, 400) + (knowledge.analysis.length > 400 ? "…" : ""),
+      data: { analysis: knowledge.analysis },
     });
-
-    if (sessionId) {
-      await updateSession(sessionId, { suggested_schema: schema });
-    }
 
     await sleep(300);
 
-    // ── Step 5: Technical specification with real crawl data ─────────────────
-    emit({
-      type: "refining",
-      message: "Writing technical specification with real crawl data",
-      detail: "Creating detailed extraction plan using real selectors and data discovered by the bot crawler…",
-    });
+    // ── Iterative agent loop ────────────────────────────────────────────────
+    for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+      const unvisitedUrls = knowledge.discoveredDetailUrls
+        .filter((u) => !knowledge.visitedUrls.has(u))
+        .slice(0, 5);
 
-    const realSelectorsReport = botCrawlResult?.pages
-      .map((p) => {
-        const selectorLines = p.contentSelectors
-          .filter((s) => s.count > 0 && (s.sampleText || s.sampleHref || s.sampleSrc))
-          .slice(0, 20)
-          .map((s) => {
-            let line = `  "${s.selector}" → ${s.count}×, <${s.tagName}>`;
-            if (s.sampleText) line += `, text: "${s.sampleText.slice(0, 80)}"`;
-            if (s.sampleHref) line += `, href: "${s.sampleHref}"`;
-            if (s.sampleSrc) line += `, src: "${s.sampleSrc}"`;
-            return line;
-          })
-          .join("\n");
-        return selectorLines ? `Page ${p.url}:\n${selectorLines}` : "";
-      })
-      .filter(Boolean)
-      .join("\n\n") ?? "";
-
-    const detailUrlExamples = botCrawlResult?.discoveredDetailUrls.slice(0, 10).join("\n  ") ?? "";
-
-    const refinePrompt = `You are a senior ${langLabel} developer specializing in web crawling and scraping with Playwright. Write a precise technical specification for a ${isDataApi ? "DATA API extraction" : "web crawler/scraper"} script.
-
-CRITICAL: A bot crawler has ALREADY visited the actual website and discovered REAL selectors and data. You MUST use these real selectors — do NOT guess or use generic selectors.
+      const evaluatePrompt = `You are an AI agent building a web scraper. Your job is to decide: do I have enough REAL data to generate a working scraper, or do I need to gather more?
 
 Website URL: ${websiteUrl}
+User wants: ${instructions}
+${isDataApi ? "Mode: DATA API" : "Mode: SCRAPER"}
+
+=== EVERYTHING I KNOW ===
+${buildKnowledgeSummary(knowledge)}
+
+=== MY ANALYSIS ===
+${knowledge.analysis.slice(0, 2000)}
+
+SELF-CHECK — ask yourself honestly:
+1. Did I find the actual DOM elements/classes that contain the user's requested data?
+2. Do I have real CSS selectors with real text/href/src values — not assumptions?
+3. Do I know the URL pattern for content/detail pages?
+4. Can I map each data field to a specific selector I discovered?
+5. Did I find the data extraction approach WITHOUT ASSUMING anything?
+
+If YES to most → choose "generate_schema" (if no schema yet) or "generate_code" (if schema exists).
+If NO → I need more data. Choose what to do next.
+
+${knowledge.crawledPages.length === 0 ? "⚠️ I haven't crawled any pages! I MUST crawl first." : ""}
+${knowledge.crawledPages.length > 0 && knowledge.crawledPages.every((p) => Object.keys(p.sampleTexts).length < 2) ? "⚠️ Pages had very little data. Try different URLs." : ""}
+
+Respond with EXACTLY one JSON object (no markdown, no explanation):
+{
+  "action": "crawl_url" | "crawl_homepage" | "fetch_page" | "generate_schema" | "generate_code",
+  "url": "https://..." (only for crawl_url/fetch_page),
+  "reason": "why this action"
+}
+
+Actions:
+- "crawl_url": Playwright-crawl a URL to discover its DOM structure and data
+- "crawl_homepage": Crawl the site homepage for more content
+- "fetch_page": HTTP fetch a URL
+- "generate_schema": I have enough real data to define the extraction schema
+- "generate_code": I have schema + real selectors, ready for final code
+
+Already visited: ${[...knowledge.visitedUrls].join(", ")}
+Unvisited discovered URLs: ${unvisitedUrls.join(", ") || "none"}`;
+
+      const decisionRaw = await chatCompletion(modelId, [
+        { role: "user", content: evaluatePrompt },
+      ], 0.1, 512);
+
+      let decision: { action: string; url?: string; reason: string };
+      try {
+        const jsonMatch = decisionRaw.match(/\{[\s\S]*\}/);
+        const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+        if (!parsed || !parsed.action) throw new Error("Invalid");
+        decision = parsed;
+      } catch {
+        if (knowledge.schema) {
+          decision = { action: "generate_code", reason: "Proceeding with available data" };
+        } else if (knowledge.crawledPages.length > 0) {
+          decision = { action: "generate_schema", reason: "Generating schema from crawl data" };
+        } else {
+          decision = { action: "crawl_homepage", reason: "Need to crawl first" };
+        }
+      }
+
+      emit({
+        type: "thinking",
+        message: `Agent: ${decision.action.replace(/_/g, " ")}`,
+        detail: decision.reason,
+      });
+
+      if (decision.action === "crawl_url" && decision.url) {
+        let targetUrl = decision.url;
+        if (knowledge.visitedUrls.has(targetUrl)) {
+          const unvisited = knowledge.discoveredDetailUrls.find((u) => !knowledge.visitedUrls.has(u));
+          if (unvisited) {
+            targetUrl = unvisited;
+          } else {
+            break;
+          }
+        }
+
+        emit({
+          type: "crawling",
+          message: `Crawling: ${targetUrl}`,
+          detail: "Discovering DOM structure and data…",
+        });
+
+        try {
+          const result = await crawlSiteForDiscovery(targetUrl, [], 2);
+          mergeDiscovery(knowledge, result);
+          emit({
+            type: "crawling",
+            message: `Crawled ${result.pages.length} page(s)`,
+            detail: `${result.discoveredDetailUrls.length} links · ${result.allInterceptedApis.length} APIs`,
+          });
+        } catch (err) {
+          emit({ type: "crawling", message: "Crawl failed", detail: `${err instanceof Error ? err.message : "Unknown"}` });
+        }
+        await sleep(300);
+        continue;
+      }
+
+      if (decision.action === "crawl_homepage") {
+        const homeUrl = new URL("/", websiteUrl).href;
+        emit({
+          type: "crawling",
+          message: `Crawling homepage: ${homeUrl}`,
+          detail: "Discovering content from homepage…",
+        });
+
+        try {
+          const result = await crawlSiteForDiscovery(homeUrl, [], 3);
+          mergeDiscovery(knowledge, result);
+          emit({
+            type: "crawling",
+            message: `Homepage: ${result.pages.length} page(s)`,
+            detail: `${result.discoveredDetailUrls.length} links · ${result.allInterceptedApis.length} APIs`,
+          });
+        } catch (err) {
+          emit({ type: "crawling", message: "Homepage crawl failed", detail: `${err instanceof Error ? err.message : "Unknown"}` });
+        }
+        await sleep(300);
+        continue;
+      }
+
+      if (decision.action === "fetch_page" && decision.url) {
+        emit({
+          type: "fetching",
+          message: `Fetching: ${decision.url}`,
+          detail: "HTTP request for data…",
+        });
+
+        try {
+          const fetchedPage = await tryFetchPage(decision.url);
+          if (fetchedPage) {
+            knowledge.fetchedPages.push(fetchedPage);
+            knowledge.visitedUrls.add(decision.url);
+            for (const ep of fetchedPage.probedEndpoints.filter((ep) => ep.isJsonApi)) {
+              if (!knowledge.interceptedApis.some((a) => a.url === ep.url)) {
+                knowledge.interceptedApis.push({ url: ep.url, sampleData: ep.sampleData, method: ep.method });
+              }
+            }
+            emit({
+              type: "browsing",
+              message: `Fetched ${decision.url}`,
+              detail: `Status ${fetchedPage.statusCode} · ${fetchedPage.discoveredEndpoints.length} endpoints`,
+            });
+          }
+        } catch {}
+        await sleep(300);
+        continue;
+      }
+
+      if (decision.action === "generate_schema") {
+        emit({
+          type: "thinking",
+          message: "Generating schema from real crawl data",
+          detail: "Using actual discovered elements and data…",
+        });
+
+        const sampleData = buildCrawlSampleData(knowledge.crawledPages);
+        const apiSample = knowledge.interceptedApis.length > 0
+          ? `\n\nLive API sample:\n${knowledge.interceptedApis[0].sampleData.slice(0, 2000)}`
+          : "";
+        const inlineData = knowledge.fetchedPages
+          .flatMap((p) => p.inlineJsonData).slice(0, 3)
+          .map((d, i) => `[${i + 1}]: ${d.slice(0, 1500)}`).join("\n");
+
+        const schemaPrompt = `Based on REAL data discovered by crawling ${websiteUrl}, generate a JSON schema for each extracted record.
+
+User wants: ${instructions}
+
+=== REAL DATA FROM PAGES ===
+${sampleData || "No sample text data."}
+
+=== DISCOVERED DOM ELEMENTS ===
+${buildElementsReport(knowledge.crawledPages).slice(0, 3000)}
+
+${inlineData ? `=== INLINE DATA ===\n${inlineData}` : ""}${apiSample}
+
+=== ANALYSIS ===
+${knowledge.analysis.slice(0, 1500)}
+
+RULES:
+- Schema fields MUST match actual data found on the site
+- Use the real class names and element structure discovered by the bot
+- Only include fields you can actually see evidence for in the crawl data
+- If the user asked for specific fields, include them and note which selector maps to each
+
+Return ONLY a valid JSON object. camelCase fields. No explanation, no markdown.`;
+
+        const schemaRaw = await chatCompletion(modelId, [{ role: "user", content: schemaPrompt }], 0.2, 1024);
+
+        try {
+          const jsonMatch = schemaRaw.match(/\{[\s\S]*\}/);
+          knowledge.schema = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+        } catch { knowledge.schema = null; }
+
+        if (!knowledge.schema || Object.keys(knowledge.schema).length < 3) {
+          knowledge.schema = { title: "", url: "", description: "", image: "", tags: [] };
+        }
+
+        emit({
+          type: "analyzing",
+          message: "Schema generated",
+          detail: `${Object.keys(knowledge.schema).length} fields`,
+          data: { schema: knowledge.schema },
+        });
+
+        if (sessionId) {
+          await updateSession(sessionId, { suggested_schema: knowledge.schema });
+        }
+        await sleep(300);
+        continue;
+      }
+
+      if (decision.action === "generate_code") {
+        break;
+      }
+
+      break;
+    }
+
+    // ── Final: Generate the scraper ─────────────────────────────────────────
+
+    if (!knowledge.schema) {
+      knowledge.schema = { title: "", url: "", description: "", image: "", tags: [] };
+    }
+    const schema = knowledge.schema;
+
+    emit({
+      type: "refining",
+      message: "Writing technical spec from real discoveries",
+      detail: "Creating extraction plan using actual DOM elements found by bot crawler…",
+    });
+
+    const elementsReport = buildElementsReport(knowledge.crawledPages);
+    const crawlSampleData = buildCrawlSampleData(knowledge.crawledPages);
+    const detailUrlExamples = knowledge.discoveredDetailUrls.slice(0, 10).join("\n  ");
+
+    const allLiveApis = [
+      ...knowledge.interceptedApis,
+      ...knowledge.fetchedPages.flatMap((p) =>
+        p.probedEndpoints.filter((ep) => ep.isJsonApi).map((ep) => ({
+          url: ep.url, sampleData: ep.sampleData, method: ep.method,
+        }))
+      ),
+    ];
+
+    const discoveredEndpointsText = knowledge.fetchedPages
+      .flatMap((p) => p.discoveredEndpoints)
+      .map((ep) => `[${ep.method}] ${ep.url} (${ep.source})`)
+      .join("\n");
+
+    const inlineDataText = knowledge.fetchedPages
+      .flatMap((p) => p.inlineJsonData).slice(0, 5)
+      .map((d, i) => `[${i + 1}]: ${d.slice(0, 2000)}`).join("\n");
+
+    const firstHtml = knowledge.crawledPages[0]?.htmlSnippet.slice(0, 6000)
+      ?? knowledge.fetchedPages[0]?.truncatedHtml.slice(0, 6000) ?? "";
+
+    const refinePrompt = `You are a senior ${langLabel} developer. Write a technical specification for a ${isDataApi ? "data API extractor" : "web crawler"}.
+
+A bot crawler dynamically scanned the website's DOM and discovered the actual elements, classes, and data on each page. Use these REAL discoveries — do not guess or assume selectors.
+
+URL: ${websiteUrl}
 Instructions: ${instructions}
-Extraction Mode: ${isDataApi ? "DATA API (authenticated)" : "SCRAPER (public data)"}
-Data schema: ${JSON.stringify(schema, null, 2)}
-${isCloudflareBlocked ? "\n⚠️ CLOUDFLARE IS ACTIVE — ALL requests must go through Playwright browser." : ""}
+Mode: ${isDataApi ? "DATA API (authenticated)" : "SCRAPER (public data)"}
+Schema: ${JSON.stringify(schema, null, 2)}
+${isCloudflareBlocked ? "⚠️ CLOUDFLARE — ALL requests through Playwright." : ""}
 
-=== REAL SELECTORS DISCOVERED BY BOT CRAWLER ===
-${realSelectorsReport || "Bot crawler did not find specific selectors."}
+=== DISCOVERED DOM ELEMENTS (real classes, real data) ===
+${elementsReport || "No elements discovered."}
 
-=== REAL DETAIL PAGE URLs ===
-${detailUrlExamples ? `  ${detailUrlExamples}` : "No detail URLs discovered."}
+=== CONTENT LINKS FOUND ===
+${detailUrlExamples ? `  ${detailUrlExamples}` : "None."}
 
-=== REAL SAMPLE DATA FROM CRAWLED PAGES ===
-${crawlSampleData || "No sample data extracted."}
+=== SAMPLE DATA FROM PAGES ===
+${crawlSampleData || "No sample data."}
 
-=== BOT CRAWL FULL REPORT ===
-${botCrawlReport.slice(0, 3000)}
+=== INTERCEPTED APIs ===
+${allLiveApis.slice(0, 5).map((a) => `[${a.method}] ${a.url}\n  ${a.sampleData.slice(0, 500)}`).join("\n") || "None."}
 
-=== INTERCEPTED API CALLS DURING CRAWL ===
-${botCrawlResult?.allInterceptedApis.slice(0, 5).map((api) => `[${api.method}] ${api.url} → ${api.statusCode}\n  Sample: ${api.sampleData.slice(0, 500)}`).join("\n") ?? "None intercepted."}
+=== ANALYSIS ===
+${knowledge.analysis.slice(0, 1500)}
 
-=== SITE ANALYSIS ===
-${analysis.slice(0, 1500)}
+=== HTML ===
+${firstHtml}
 
-=== DISCOVERED ENDPOINTS ===
-${discoveredEndpointsText || "None found in static HTML"}
+Write the spec:
+1. Map each schema field to a SPECIFIC discovered element/class from above
+2. CRAWLING is primary: navigate pages, follow links, extract per page
+3. All requests through Playwright
+4. Include fallbacks: homepage crawl, sitemap
+5. Error handling: retry 3x, skip failures
+No comments.`;
 
-=== PROBED API ENDPOINTS ===
-${probedApiText || "No endpoints probed"}
-
-${allLiveApis.length > 0 ? `=== ✅ CONFIRMED LIVE JSON APIs ===\n${allLiveApis.slice(0, 3).map((ep) => `URL: ${ep.url}\nSample: ${ep.sampleData.slice(0, 800)}`).join("\n\n")}\n\nSupplement crawling with these confirmed APIs.` : ""}
-
-=== HTML SNIPPET FROM CRAWLED PAGES ===
-${botCrawlResult?.pages[0]?.htmlSnippet.slice(0, 6000) ?? fetchedHtmlSnippet.slice(0, 6000)}
-
-Write the technical specification. IMPORTANT RULES:
-1. Use the REAL CSS selectors listed above — the bot crawler already verified they exist on the site
-2. Reference the actual sample data and URLs the bot found
-3. Map each schema field to a SPECIFIC real selector from the crawl report
-4. Include the real detail page URL pattern based on discovered URLs
-5. CRAWLING IS THE PRIMARY STRATEGY — navigate pages, follow links, extract data
-6. ALL requests through Playwright browser
-7. ${isDataApi ? "AUTHENTICATION FLOW — authenticate before crawling." : ""}
-8. If a field does not have a clear selector, note it explicitly and suggest alternatives
-
-No comments in code snippets.`;
-
-    let refinedPrompt = await chatCompletion(modelId, [
+    const refinedPrompt = await chatCompletion(modelId, [
       { role: "user", content: refinePrompt },
     ], 0.3, 3072);
 
     emit({
       type: "refining",
-      message: "Technical specification complete",
+      message: "Technical spec complete",
       detail: refinedPrompt.slice(0, 300) + (refinedPrompt.length > 300 ? "…" : ""),
       data: { refinedPrompt },
     });
@@ -525,127 +664,87 @@ No comments in code snippets.`;
 
     await sleep(300);
 
-    // ── Step 6: Build the full crawler/scraper ───────────────────────────────
+    // ── Build the scraper ───────────────────────────────────────────────────
     emit({
       type: "building",
       message: `Building ${langLabel} ${isDataApi ? "data API extractor" : "web crawler"}`,
-      detail: `Generating production-ready .${ext} crawler using real selectors from bot crawl…`,
+      detail: `Generating .${ext} crawler with real discovered selectors…`,
     });
 
     await sleep(400);
 
     const baseFile = isDataApi
-      ? (isTs
-        ? generateDataApiTemplate(websiteUrl, schema, instructions, credentials)
-        : generateDataApiPyTemplate(websiteUrl, schema, instructions, credentials))
-      : (isTs
-        ? generateApiFileTemplate(websiteUrl, schema, instructions)
-        : generatePyFileTemplate(websiteUrl, schema, instructions));
+      ? (isTs ? generateDataApiTemplate(websiteUrl, schema, instructions, credentials)
+             : generateDataApiPyTemplate(websiteUrl, schema, instructions, credentials))
+      : (isTs ? generateApiFileTemplate(websiteUrl, schema, instructions)
+             : generatePyFileTemplate(websiteUrl, schema, instructions));
 
     const TEMPLATE_PREVIEW_LINES = 60;
-    const enhancePrompt = `You are a senior ${langLabel} web crawling and scraping engineer. Write a complete, production-ready ${langLabel} script that CRAWLS and extracts structured data from the target website using Playwright.
+    const enhancePrompt = `You are a senior ${langLabel} web scraping engineer. Write a complete, production-ready ${langLabel} script that CRAWLS and extracts data using Playwright.
 
-OUTPUT RULES:
-- Return ONLY raw ${langLabel} source code. No markdown fences, no explanation, no comments, no docstrings.
-- The script must be fully self-contained — the user just runs it.
-- The script MUST use Playwright to crawl the website.
+OUTPUT: ONLY raw ${langLabel} code. No markdown fences, no explanation, no comments. Self-contained.
 
-CRITICAL: A bot crawler has ALREADY visited the actual website and discovered REAL CSS selectors and data values. You MUST use these REAL selectors in your code. Do NOT use generic selectors like [class*='title'] when the bot found specific ones. The bot's findings are ground truth.
+CRITICAL: A bot crawler dynamically scanned the actual website DOM. It discovered every CSS class, data attribute, and element. Use the REAL class names and selectors it found — do NOT invent generic selectors.
 
-=== TARGET WEBSITE ===
+=== TARGET ===
 URL: ${websiteUrl}
-User instructions: ${instructions}
+Instructions: ${instructions}
 Mode: ${isDataApi ? "DATA API (authenticated)" : "SCRAPER (public data)"}
-Output schema: ${JSON.stringify(schema, null, 2)}
-${isCloudflareBlocked ? "\n⚠️ CLOUDFLARE PROTECTED — ALL requests MUST go through Playwright browser." : ""}
+Schema: ${JSON.stringify(schema, null, 2)}
+${isCloudflareBlocked ? "⚠️ CLOUDFLARE — ALL requests through Playwright." : ""}
 
-=== REAL SELECTORS FROM BOT CRAWLER (USE THESE!) ===
-${realSelectorsReport || "No specific selectors discovered — use the HTML snippet below to identify them."}
+=== REAL DOM ELEMENTS DISCOVERED (USE THESE!) ===
+${elementsReport || "No specific elements — use HTML below."}
 
-=== REAL SAMPLE DATA FROM BOT CRAWLER ===
-${crawlSampleData || "No sample data available."}
+=== SAMPLE DATA FROM PAGES ===
+${crawlSampleData || "No sample data."}
 
-=== REAL DETAIL PAGE URLs FROM BOT CRAWLER ===
-${detailUrlExamples ? `  ${detailUrlExamples}` : "No detail URLs discovered."}
+=== CONTENT LINKS FOUND ===
+${detailUrlExamples ? `  ${detailUrlExamples}` : "None."}
 
-=== BOT CRAWL REPORT ===
-${botCrawlReport.slice(0, 3000)}
+=== INTERCEPTED APIs ===
+${allLiveApis.slice(0, 5).map((a) => `[${a.method}] ${a.url}\n  ${a.sampleData.slice(0, 500)}`).join("\n") || "None."}
 
-=== INTERCEPTED API CALLS (from bot crawl) ===
-${botCrawlResult?.allInterceptedApis.slice(0, 5).map((api) => `[${api.method}] ${api.url} → ${api.statusCode}\n  Sample: ${api.sampleData.slice(0, 500)}`).join("\n") ?? "None intercepted."}
+=== ENDPOINTS ===
+${discoveredEndpointsText || "None."}
 
-=== DISCOVERED API ENDPOINTS (from HTML) ===
-${discoveredEndpointsText || "None discovered in static HTML."}
+=== INLINE DATA ===
+${inlineDataText || "None."}
 
-=== PROBED API ENDPOINTS (actual responses) ===
-${probedApiText || "No endpoints probed."}
+=== HTML FROM CRAWLED PAGES ===
+${knowledge.crawledPages[0]?.htmlSnippet.slice(0, 12000) ?? knowledge.fetchedPages[0]?.truncatedHtml.slice(0, 12000) ?? ""}
 
-${allLiveApis.length > 0 ? `=== ✅ CONFIRMED LIVE JSON APIs ===\n${allLiveApis.slice(0, 3).map((ep) => `URL: ${ep.url}\nSample data: ${ep.sampleData.slice(0, 1000)}`).join("\n\n")}\n\nSupplement crawling with these confirmed APIs.` : ""}
-
-=== INLINE JSON DATA ===
-${inlineDataText ? inlineDataText.slice(0, 3000) : "None found."}
-
-=== REAL HTML FROM CRAWLED PAGES ===
-${botCrawlResult?.pages[0]?.htmlSnippet.slice(0, 12000) ?? fetchedHtmlSnippet.slice(0, 12000)}
-
-=== TECHNICAL SPECIFICATION ===
+=== TECHNICAL SPEC ===
 ${refinedPrompt.slice(0, 3000)}
 
-${isDataApi ? `=== AUTHENTICATION ===
-Credentials available: ${credentials?.email ? "email" : ""}${credentials?.password ? ", password" : ""}${credentials?.token ? ", API token" : ""}${credentials?.cookies ? ", cookies" : ""}
-Use the actual auth endpoints discovered above to authenticate, then crawl per-user data.
-` : ""}
+${isDataApi ? `=== AUTH ===\nCredentials: ${credentials?.email ? "email" : ""}${credentials?.password ? ", password" : ""}${credentials?.token ? ", token" : ""}${credentials?.cookies ? ", cookies" : ""}` : ""}
 
-=== MANDATORY IMPLEMENTATION REQUIREMENTS ===
+=== REQUIREMENTS ===
+1. USE REAL SELECTORS: The bot discovered actual CSS classes and elements on the site. Use those exact class names and selectors. For each schema field, find the matching discovered element.
 
-1. USE REAL SELECTORS (MOST IMPORTANT):
-   The bot crawler already visited the site and discovered which CSS selectors contain actual data.
-   You MUST use these real selectors in your code, NOT generic ones.
-   For each schema field, find the matching selector from the bot crawl report and use it.
+2. CRAWL STRATEGY:
+   a. Launch Playwright, navigate to ${websiteUrl}
+   b. page.on('response') to capture JSON APIs
+   c. Find content links using discovered element patterns
+   d. Visit each content page, extract data using discovered selectors
+   e. Paginate through listings
+   f. Homepage fallback if target URL is sparse
+   g. Sitemap fallback
 
-2. CRAWLING STRATEGY:
-   a. Launch Playwright browser and navigate to ${websiteUrl}
-   b. Set up network interception: page.on('response') to capture JSON API responses
-   c. Find detail page links using the real selectors the bot discovered
-   d. Visit each detail page and extract data using the real selectors
-   e. Handle pagination
-   f. HOMEPAGE FALLBACK — if target URL has limited content, try the homepage
-   g. SITEMAP FALLBACK — try /sitemap.xml
+3. PER-PAGE: Use discovered selectors for each field. Intercepted API data as supplement. fillMissingFields() for gaps.
 
-3. PER-PAGE EXTRACTION:
-   - Use the REAL selectors from the bot crawl report for each field
-   - Also check intercepted API data
-   - Handle missing fields gracefully with fillMissingFields()
+4. ERRORS: try/catch everywhere, retry 3x, skip failures, continue.
 
-4. ROBUST ERROR HANDLING:
-   - try/catch on all selector operations
-   - Retry page loads 3 times
-   - Continue crawling on individual page failures
+5. DATA: Generate IDs from URL hash, provider = hostname, deduplicate by URL/ID.
 
-5. COMPLETE DATA FIELDS:
-   - For ID fields: generate from URL hash if not found
-   - For "provider"/"source" fields: set to the website hostname
-   - For "url"/"link" fields: use the current page URL
-   - Deduplicate results by URL or ID
+6. OUTPUT: JSON { total_items, scraped_at, source_url, items } → file + stdout.
 
-6. FILE OUTPUT:
-   - JSON envelope: { total_items, scraped_at, source_url, items: [...] }
-   - Save to output-YYYY-MM-DD.json
-   - Print to stdout as formatted JSON
+7. CODE: ${isTs ? "Strict TypeScript, import playwright" : "Python type hints, playwright.sync_api"}. Class: init(), scrape(), close(). No comments.
 
-7. CODE QUALITY:
-   - ${isTs ? "Strict TypeScript types — explicit type annotations" : "Python type hints throughout"}
-   - ${isTs ? "import { chromium, Browser, Page } from 'playwright'" : "from playwright.sync_api import sync_playwright"}
-   - Class-based structure with init(), scrape(), close()
-   - No comments anywhere
-
-REFERENCE TEMPLATE (structural guide only — replace ALL selectors with real ones from bot crawl):
-\`\`\`${isTs ? "typescript" : "python"}
+TEMPLATE (structural guide — replace ALL generic selectors with real discovered ones):
 ${baseFile.split("\n").slice(0, TEMPLATE_PREVIEW_LINES).join("\n")}
-... (template continues with safeExtract, extractImages, getDetailLinks, extractDetailPage, tryHomepageFallback, pagination, deduplication, file output)
-\`\`\`
 
-Write the COMPLETE ${langLabel} file now. Use REAL selectors from the bot crawl. NEVER use generic selectors when real ones are available.`;
+Write the COMPLETE file. Use REAL discovered selectors. No generic selectors.`;
 
     let apiFileContent = baseFile;
     const streamParts: string[] = [];
@@ -653,26 +752,19 @@ Write the COMPLETE ${langLabel} file now. Use REAL selectors from the bot crawl.
     emit({
       type: "generating",
       message: `Streaming ${langLabel} crawler code`,
-      detail: `AI writing your custom ${isDataApi ? "data API extractor" : "web crawler"} using real selectors from bot crawl…`,
+      detail: `Writing ${isDataApi ? "data API extractor" : "web crawler"} with real discovered selectors…`,
     });
 
     try {
-      for await (const chunk of streamCompletion(
-        modelId,
-        [{ role: "user", content: enhancePrompt }],
-        0.2,
-        16384
-      )) {
+      for await (const chunk of streamCompletion(modelId, [{ role: "user", content: enhancePrompt }], 0.2, 16384)) {
         streamParts.push(chunk);
         sendSSE(res, "code_chunk", { chunk });
       }
       let enhanced = streamParts.join("");
       if (enhanced.length > 500) {
-        const OPENING_FENCE = /^```(?:typescript|ts|python|py|javascript|js)?\s*\n?/gm;
-        const CLOSING_FENCE = /\n?```\s*$/gm;
         enhanced = enhanced
-          .replace(OPENING_FENCE, "")
-          .replace(CLOSING_FENCE, "")
+          .replace(/^```(?:typescript|ts|python|py|javascript|js)?\s*\n?/gm, "")
+          .replace(/\n?```\s*$/gm, "")
           .trim();
         if (enhanced.length > 500) {
           apiFileContent = enhanced;
@@ -689,23 +781,19 @@ Write the COMPLETE ${langLabel} file now. Use REAL selectors from the bot crawl.
     emit({
       type: "complete",
       message: `${isDataApi ? "Data API extractor" : "Web crawler"} file ready`,
-      detail: `${apiFileContent.split("\n").length} lines of ${langLabel} generated · Bot-crawl-informed · Real selectors used · ${endpointCount} API endpoint(s)`,
+      detail: `${apiFileContent.split("\n").length} lines · ${knowledge.crawledPages.length} pages crawled · ${knowledge.interceptedApis.length} APIs · Real selectors`,
       data: {
         apiFile: apiFileContent,
         schema,
         refinedPrompt,
-        analysis,
+        analysis: knowledge.analysis,
       },
     });
 
     sendSSE(res, "done", { sessionId });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    emit({
-      type: "error",
-      message: "Agent session failed",
-      detail: message,
-    });
+    emit({ type: "error", message: "Agent session failed", detail: message });
     sendSSE(res, "error", { message });
   } finally {
     res.end();

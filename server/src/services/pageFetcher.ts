@@ -649,23 +649,27 @@ export function buildPageReport(page: FetchedPage): string {
 
 // ─── Bot Crawl: Deep Playwright exploration ──────────────────────────────────
 
+const MAX_HTML_SNIPPET = 15_000;
+const POST_LOAD_DELAY = 1500;
+
 export interface CrawledPageReport {
   url: string;
   title: string;
-  contentSelectors: SelectorInfo[];
+  elements: DiscoveredElement[];
   linkPatterns: string[];
   interceptedApis: ProbedEndpoint[];
   sampleTexts: Record<string, string>;
   htmlSnippet: string;
 }
 
-export interface SelectorInfo {
+export interface DiscoveredElement {
   selector: string;
   count: number;
   sampleText: string;
   sampleHref?: string;
   sampleSrc?: string;
   tagName: string;
+  className?: string;
 }
 
 export interface BotCrawlResult {
@@ -673,6 +677,169 @@ export interface BotCrawlResult {
   allInterceptedApis: ProbedEndpoint[];
   discoveredDetailUrls: string[];
   siteStructure: string;
+}
+
+function scanPage(): {
+  elements: Array<{
+    selector: string; count: number; sampleText: string;
+    sampleHref?: string; sampleSrc?: string; tagName: string; className?: string;
+  }>;
+  detailLinks: string[];
+  sampleTexts: Record<string, string>;
+} {
+  const elements: Array<{
+    selector: string; count: number; sampleText: string;
+    sampleHref?: string; sampleSrc?: string; tagName: string; className?: string;
+  }> = [];
+  const seenSelectors = new Set<string>();
+
+  function addSel(selector: string, el: Element, count: number): void {
+    if (seenSelectors.has(selector)) return;
+    seenSelectors.add(selector);
+    const info: typeof elements[0] = {
+      selector,
+      count,
+      sampleText: (el.textContent || "").trim().slice(0, 200),
+      tagName: el.tagName.toLowerCase(),
+    };
+    if (el instanceof HTMLAnchorElement && el.href) info.sampleHref = el.href;
+    if (el instanceof HTMLImageElement && (el.src || el.dataset.src)) {
+      info.sampleSrc = el.src || el.dataset.src || "";
+    }
+    const cls = el.getAttribute("class");
+    if (cls) info.className = cls.trim().slice(0, 120);
+    elements.push(info);
+  }
+
+  const allEls = document.querySelectorAll("*");
+  const classCounts = new Map<string, { count: number; el: Element }>();
+
+  for (let i = 0; i < allEls.length && i < 5000; i++) {
+    const el = allEls[i];
+    const tag = el.tagName.toLowerCase();
+
+    if (["script", "style", "meta", "link", "head", "br", "hr", "noscript", "svg", "path"].includes(tag)) continue;
+
+    const cls = el.getAttribute("class")?.trim();
+    if (cls) {
+      const parts = cls.split(/\s+/);
+      for (const part of parts) {
+        if (part.length < 2 || part.length > 60) continue;
+        const sel = `.${CSS.escape(part)}`;
+        const existing = classCounts.get(sel);
+        if (existing) {
+          existing.count++;
+        } else {
+          classCounts.set(sel, { count: 1, el });
+        }
+      }
+    }
+
+    const dataAttrs = el.getAttributeNames().filter((a) => a.startsWith("data-"));
+    for (const attr of dataAttrs) {
+      const sel = `[${attr}]`;
+      const existing = classCounts.get(sel);
+      if (existing) {
+        existing.count++;
+      } else {
+        classCounts.set(sel, { count: 1, el });
+      }
+    }
+
+    const itemprop = el.getAttribute("itemprop");
+    if (itemprop) {
+      const sel = `[itemprop="${itemprop}"]`;
+      const existing = classCounts.get(sel);
+      if (existing) {
+        existing.count++;
+      } else {
+        classCounts.set(sel, { count: 1, el });
+      }
+    }
+  }
+
+  for (const [sel, data] of classCounts) {
+    if (data.count >= 2 || sel.startsWith("[itemprop")) {
+      const all = document.querySelectorAll(sel);
+      const first = all[0];
+      if (first) {
+        const text = (first.textContent || "").trim();
+        const hasContent = text.length > 0 || first instanceof HTMLImageElement || first instanceof HTMLAnchorElement;
+        if (hasContent) {
+          addSel(sel, first, all.length);
+        }
+      }
+    }
+  }
+
+  const tags = ["h1", "h2", "h3", "h4", "p", "article", "section", "main", "nav", "ul", "ol", "li", "table", "tr", "td", "th", "img", "a", "span", "div"];
+  for (const tag of tags) {
+    const all = document.querySelectorAll(tag);
+    if (all.length > 0) {
+      addSel(tag, all[0], all.length);
+    }
+  }
+
+  const detailLinks: string[] = [];
+  const seenHrefs = new Set<string>();
+  const linkContainers = document.querySelectorAll("a[href]");
+  for (let i = 0; i < linkContainers.length && detailLinks.length < 50; i++) {
+    const a = linkContainers[i] as HTMLAnchorElement;
+    const href = a.href;
+    if (!href || href.startsWith("javascript:") || href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:")) continue;
+    if (seenHrefs.has(href)) continue;
+    seenHrefs.add(href);
+
+    const isNav = a.closest("nav, header, footer, [role='navigation']");
+    if (isNav) continue;
+
+    const parent = a.parentElement;
+    const isContentLink = parent && (
+      parent.tagName === "LI" || parent.tagName === "ARTICLE" ||
+      parent.tagName === "H2" || parent.tagName === "H3" || parent.tagName === "H4" ||
+      (parent.getAttribute("class") || "").length > 0
+    );
+    if (isContentLink || a.textContent!.trim().length > 5) {
+      try {
+        const resolved = new URL(href, location.href).href;
+        if (resolved.startsWith(location.protocol) && new URL(resolved).hostname === location.hostname) {
+          detailLinks.push(resolved);
+        }
+      } catch {}
+    }
+  }
+
+  const sampleTexts: Record<string, string> = {};
+  const title = document.querySelector("h1")?.textContent?.trim() || document.title;
+  if (title) sampleTexts["page_title"] = title.slice(0, 300);
+
+  const metaDesc = document.querySelector("meta[name='description']")?.getAttribute("content");
+  if (metaDesc) sampleTexts["meta_description"] = metaDesc.slice(0, 300);
+
+  const ldJson = document.querySelector("script[type='application/ld+json']");
+  if (ldJson) {
+    try {
+      const data = JSON.parse(ldJson.textContent || "");
+      if (data.name) sampleTexts["ld_name"] = String(data.name).slice(0, 200);
+      if (data.description) sampleTexts["ld_description"] = String(data.description).slice(0, 200);
+      if (data["@type"]) sampleTexts["ld_type"] = String(data["@type"]).slice(0, 100);
+    } catch {}
+  }
+
+  const repeatingGroups = [...classCounts.entries()]
+    .filter(([, d]) => d.count >= 3)
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 5);
+
+  for (const [sel, data] of repeatingGroups) {
+    const first = document.querySelector(sel);
+    if (first) {
+      const text = (first.textContent || "").trim().slice(0, 200);
+      if (text) sampleTexts[`repeating_${sel.replace(/[^a-zA-Z0-9]/g, "_")}`] = `${data.count}× "${text}"`;
+    }
+  }
+
+  return { elements, detailLinks, sampleTexts };
 }
 
 export async function crawlSiteForDiscovery(
@@ -737,139 +904,31 @@ export async function crawlSiteForDiscovery(
       } catch {}
     }
 
+    const scanFn = scanPage;
+
     for (const url of urlsToVisit.slice(0, maxPages)) {
       if (visited.has(url)) continue;
       visited.add(url);
 
       try {
         await page.goto(url, { waitUntil: "networkidle", timeout: 25_000 });
-        await page.waitForTimeout(1500);
+        await page.waitForTimeout(POST_LOAD_DELAY);
 
-        const crawledPage = await page.evaluate((currentUrl: string) => {
-          const title = document.title || "";
-
-          const contentSelectors: Array<{
-            selector: string;
-            count: number;
-            sampleText: string;
-            sampleHref?: string;
-            sampleSrc?: string;
-            tagName: string;
-          }> = [];
-
-          const candidateSelectors = [
-            "article", "[class*='card']", "[class*='item']", "[class*='product']",
-            "[class*='comic']", "[class*='manga']", "[class*='anime']", "[class*='movie']",
-            "[class*='listing']", "[class*='entry']", "[class*='post']", "[class*='result']",
-            "[class*='book']", "[class*='series']", "[class*='show']", "[class*='game']",
-            "h1", "h2", "h3",
-            "[class*='title']", "[class*='name']",
-            "[class*='description']", "[class*='summary']",
-            "[class*='genre']", "[class*='tag']", "[class*='category']",
-            "[class*='rating']", "[class*='score']",
-            "[class*='price']", "[class*='cost']",
-            "[class*='author']", "[class*='creator']", "[class*='artist']",
-            "[class*='chapter']", "[class*='episode']",
-            "[class*='status']",
-            "[class*='cover'] img", "[class*='thumb'] img", "[class*='poster'] img",
-            "img[src]",
-            "a[href]",
-            "[class*='pagination']", "[class*='pager']", "a[rel='next']",
-            "[data-id]", "[data-slug]", "[data-page]",
-          ];
-
-          for (const sel of candidateSelectors) {
-            try {
-              const els = document.querySelectorAll(sel);
-              if (els.length > 0) {
-                const first = els[0];
-                const info: {
-                  selector: string;
-                  count: number;
-                  sampleText: string;
-                  sampleHref?: string;
-                  sampleSrc?: string;
-                  tagName: string;
-                } = {
-                  selector: sel,
-                  count: els.length,
-                  sampleText: (first.textContent || "").trim().slice(0, 200),
-                  tagName: first.tagName.toLowerCase(),
-                };
-                if (first instanceof HTMLAnchorElement && first.href) {
-                  info.sampleHref = first.href;
-                }
-                if (first instanceof HTMLImageElement && (first.src || first.dataset.src)) {
-                  info.sampleSrc = first.src || first.dataset.src || "";
-                }
-                contentSelectors.push(info);
-              }
-            } catch {}
-          }
-
-          const detailLinks: string[] = [];
-          const linkSelectors = [
-            "article a[href]", "[class*='card'] a[href]", "[class*='item'] a[href]",
-            "[class*='title'] a[href]", "h2 a[href]", "h3 a[href]",
-            "[class*='comic'] a[href]", "[class*='manga'] a[href]",
-            "[class*='entry'] a[href]", "[class*='post'] a[href]",
-          ];
-          for (const sel of linkSelectors) {
-            try {
-              const els = document.querySelectorAll(sel);
-              els.forEach((el) => {
-                const href = (el as HTMLAnchorElement).href;
-                if (href && !href.startsWith("javascript:") && !href.startsWith("#") && !href.startsWith("mailto:")) {
-                  detailLinks.push(href);
-                }
-              });
-              if (detailLinks.length > 0) break;
-            } catch {}
-          }
-
-          const sampleTexts: Record<string, string> = {};
-          const textSelectors: Record<string, string[]> = {
-            title: ["h1", "h2", "[class*='title']", "[itemprop='name']"],
-            description: ["[class*='description']", "[class*='summary']", "[itemprop='description']", "meta[name='description']"],
-            genre: ["[class*='genre']", "[class*='tag']", "[class*='category']"],
-            rating: ["[class*='rating']", "[class*='score']", "[itemprop='ratingValue']"],
-            author: ["[class*='author']", "[class*='creator']", "[itemprop='author']"],
-            price: ["[class*='price']", "[itemprop='price']"],
-            status: ["[class*='status']"],
-          };
-          for (const [field, sels] of Object.entries(textSelectors)) {
-            for (const sel of sels) {
-              try {
-                const el = document.querySelector(sel);
-                if (el) {
-                  const text = (sel.startsWith("meta") ? el.getAttribute("content") : el.textContent) || "";
-                  if (text.trim()) {
-                    sampleTexts[field] = text.trim().slice(0, 300);
-                    break;
-                  }
-                }
-              } catch {}
-            }
-          }
-
-          const bodySnippet = document.body.innerHTML.slice(0, 15000);
-
-          return {
-            url: currentUrl,
-            title,
-            contentSelectors,
-            linkPatterns: [...new Set(detailLinks)].slice(0, 30),
-            sampleTexts,
-            htmlSnippet: bodySnippet,
-          };
-        }, url);
+        const scanResult = await page.evaluate(scanFn);
+        const htmlSnippet = await page.evaluate((max: number) => document.body.innerHTML.slice(0, max), MAX_HTML_SNIPPET);
+        const title = await page.title();
 
         pages.push({
-          ...crawledPage,
+          url,
+          title,
+          elements: scanResult.elements,
+          linkPatterns: scanResult.detailLinks,
           interceptedApis: [...allInterceptedApis],
+          sampleTexts: scanResult.sampleTexts,
+          htmlSnippet,
         });
 
-        for (const link of crawledPage.linkPatterns) {
+        for (const link of scanResult.detailLinks) {
           if (!visited.has(link) && !discoveredDetailUrls.includes(link)) {
             discoveredDetailUrls.push(link);
           }
@@ -881,88 +940,20 @@ export async function crawlSiteForDiscovery(
             visited.add(detailUrl);
             try {
               await page.goto(detailUrl, { waitUntil: "networkidle", timeout: 25_000 });
-              await page.waitForTimeout(1500);
+              await page.waitForTimeout(POST_LOAD_DELAY);
 
-              const detailPage = await page.evaluate((currentUrl: string) => {
-                const title = document.title || "";
-                const contentSelectors: Array<{
-                  selector: string; count: number; sampleText: string;
-                  sampleHref?: string; sampleSrc?: string; tagName: string;
-                }> = [];
-
-                const selectors = [
-                  "h1", "h2", "h3",
-                  "[class*='title']", "[class*='name']",
-                  "[class*='description']", "[class*='summary']", "[class*='synopsis']",
-                  "[class*='genre']", "[class*='tag']", "[class*='category']",
-                  "[class*='rating']", "[class*='score']",
-                  "[class*='author']", "[class*='creator']", "[class*='artist']",
-                  "[class*='chapter']", "[class*='episode']",
-                  "[class*='status']", "[class*='state']",
-                  "[class*='cover'] img", "[class*='thumb'] img", "[class*='poster'] img",
-                  "[class*='detail']", "[class*='info']",
-                  "[itemprop]",
-                  "img[src]",
-                  "[data-id]", "[data-slug]",
-                ];
-
-                for (const sel of selectors) {
-                  try {
-                    const els = document.querySelectorAll(sel);
-                    if (els.length > 0) {
-                      const first = els[0];
-                      const info: {
-                        selector: string; count: number; sampleText: string;
-                        sampleHref?: string; sampleSrc?: string; tagName: string;
-                      } = {
-                        selector: sel,
-                        count: els.length,
-                        sampleText: (first.textContent || "").trim().slice(0, 200),
-                        tagName: first.tagName.toLowerCase(),
-                      };
-                      if (first instanceof HTMLImageElement && (first.src || first.dataset.src)) {
-                        info.sampleSrc = first.src || first.dataset.src || "";
-                      }
-                      contentSelectors.push(info);
-                    }
-                  } catch {}
-                }
-
-                const sampleTexts: Record<string, string> = {};
-                const textSelectors: Record<string, string[]> = {
-                  title: ["h1", "[class*='title']", "[itemprop='name']"],
-                  description: ["[class*='description']", "[class*='summary']", "[class*='synopsis']", "[itemprop='description']"],
-                  genre: ["[class*='genre'] a", "[class*='tag'] a", "[class*='category'] a"],
-                  rating: ["[class*='rating']", "[class*='score']", "[itemprop='ratingValue']"],
-                  author: ["[class*='author']", "[class*='creator']", "[itemprop='author']"],
-                  status: ["[class*='status']"],
-                  chapter: ["[class*='chapter']", "[class*='episode']"],
-                };
-                for (const [field, sels] of Object.entries(textSelectors)) {
-                  for (const sel of sels) {
-                    try {
-                      const el = document.querySelector(sel);
-                      if (el && el.textContent?.trim()) {
-                        sampleTexts[field] = el.textContent.trim().slice(0, 300);
-                        break;
-                      }
-                    } catch {}
-                  }
-                }
-
-                return {
-                  url: currentUrl,
-                  title,
-                  contentSelectors,
-                  linkPatterns: [] as string[],
-                  sampleTexts,
-                  htmlSnippet: document.body.innerHTML.slice(0, 15000),
-                };
-              }, detailUrl);
+              const detailScan = await page.evaluate(scanFn);
+              const detailHtml = await page.evaluate((max: number) => document.body.innerHTML.slice(0, max), MAX_HTML_SNIPPET);
+              const detailTitle = await page.title();
 
               pages.push({
-                ...detailPage,
+                url: detailUrl,
+                title: detailTitle,
+                elements: detailScan.elements,
+                linkPatterns: [],
                 interceptedApis: [],
+                sampleTexts: detailScan.sampleTexts,
+                htmlSnippet: detailHtml,
               });
             } catch {}
           }
@@ -990,22 +981,23 @@ export async function crawlSiteForDiscovery(
       }
     }
 
-    const meaningfulSelectors = p.contentSelectors.filter(
-      (s) => s.count > 0 && (s.sampleText || s.sampleHref || s.sampleSrc)
+    const meaningfulEls = p.elements.filter(
+      (e) => e.count > 0 && (e.sampleText || e.sampleHref || e.sampleSrc)
     );
-    if (meaningfulSelectors.length > 0) {
-      structureLines.push(`\nCSS selectors with data (${meaningfulSelectors.length}):`);
-      for (const s of meaningfulSelectors.slice(0, 30)) {
-        let line = `  "${s.selector}" → ${s.count} element(s), tag: <${s.tagName}>`;
-        if (s.sampleText) line += `, text: "${s.sampleText.slice(0, 100)}"`;
-        if (s.sampleHref) line += `, href: "${s.sampleHref}"`;
-        if (s.sampleSrc) line += `, src: "${s.sampleSrc}"`;
+    if (meaningfulEls.length > 0) {
+      structureLines.push(`\nDiscovered elements (${meaningfulEls.length}):`);
+      for (const e of meaningfulEls.slice(0, 40)) {
+        let line = `  "${e.selector}" → ${e.count}×, <${e.tagName}>`;
+        if (e.className) line += ` class="${e.className.slice(0, 60)}"`;
+        if (e.sampleText) line += `, text: "${e.sampleText.slice(0, 100)}"`;
+        if (e.sampleHref) line += `, href: "${e.sampleHref}"`;
+        if (e.sampleSrc) line += `, src: "${e.sampleSrc}"`;
         structureLines.push(line);
       }
     }
 
     if (p.linkPatterns.length > 0) {
-      structureLines.push(`\nDetail links found (${p.linkPatterns.length}):`);
+      structureLines.push(`\nContent links found (${p.linkPatterns.length}):`);
       for (const link of p.linkPatterns.slice(0, 10)) {
         structureLines.push(`  ${link}`);
       }
@@ -1013,7 +1005,7 @@ export async function crawlSiteForDiscovery(
   }
 
   if (allInterceptedApis.length > 0) {
-    structureLines.push(`\n=== INTERCEPTED API CALLS DURING CRAWL (${allInterceptedApis.length}) ===`);
+    structureLines.push(`\n=== INTERCEPTED API CALLS (${allInterceptedApis.length}) ===`);
     for (const api of allInterceptedApis.slice(0, 10)) {
       structureLines.push(`[${api.method}] ${api.url} → ${api.statusCode}`);
       structureLines.push(`  Sample: ${api.sampleData.slice(0, 500)}`);
