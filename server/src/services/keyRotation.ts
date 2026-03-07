@@ -41,6 +41,15 @@ export function getKeyCount(prefix: string): number {
   return pools[prefix].keys.length;
 }
 
+/** Return a snapshot of all keys for a provider (for exhaustion-retry loops). */
+export function getAllKeys(prefix: string): string[] {
+  if (!pools[prefix]) {
+    const keys = loadKeys(prefix);
+    pools[prefix] = { keys, index: 0 };
+  }
+  return [...pools[prefix].keys];
+}
+
 export function resetPools(): void {
   for (const k in pools) {
     delete pools[k];

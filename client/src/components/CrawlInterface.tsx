@@ -11,6 +11,7 @@ import {
   X,
   Loader2,
   Sparkles,
+  Settings2,
 } from "lucide-react";
 import type { ModelOption, SessionConfig, OutputLanguage, ExtractionMode, AuthCredentials } from "../types";
 
@@ -99,7 +100,6 @@ export default function CrawlInterface({
     }
   }
 
-  // Derive exe models from the API response (provider === "exe"), falling back to id prefix
   const exeModels = models.filter((m) => m.provider === "exe" || m.id.startsWith("exe-"));
   const otherModels = models.filter((m) => m.provider !== "exe" && !m.id.startsWith("exe-"));
   const selectedModelInfo = models.find((m) => m.id === selectedModel);
@@ -115,22 +115,27 @@ export default function CrawlInterface({
     <div className="crawl-interface">
       {/* Header */}
       <div className="crawl-interface__header">
-        <div className="crawl-interface__title-row">
-          <Sparkles size={18} style={{ color: "var(--text-2)" }} />
-          <h2 className="crawl-interface__title">What do you want to scrape?</h2>
+        <div className="crawl-interface__hero">
+          <div className="crawl-interface__hero-icon">
+            <Sparkles size={20} />
+          </div>
+          <div>
+            <h2 className="crawl-interface__title">What do you want to scrape?</h2>
+            <p className="crawl-interface__subtitle">
+              Drop a URL, describe the data — the AI analyses the site and writes a production scraper.
+            </p>
+          </div>
         </div>
-        <p className="crawl-interface__subtitle">
-          Enter a URL and describe the data you want — the AI will analyse the site, build a schema, and write production-ready scraper code.
-        </p>
       </div>
 
       <form onSubmit={handleSubmit} className="crawl-interface__form">
-        {/* URL bar */}
-        <div className="crawl-input-group">
-          <div className="crawl-input-url">
-            <Globe size={14} style={{ color: "var(--text-4)", flexShrink: 0 }} />
+        {/* Unified chat card */}
+        <div className="crawl-card">
+          {/* URL row */}
+          <div className="crawl-card__url-row">
+            <Globe size={13} className="crawl-card__url-icon" />
             <input
-              className="crawl-url-input"
+              className="crawl-card__url-input"
               type="text"
               placeholder="https://example.com"
               value={url}
@@ -140,29 +145,38 @@ export default function CrawlInterface({
             />
             {urlError && <span className="crawl-url-error">{urlError}</span>}
           </div>
-        </div>
 
-        {/* Instructions box + send */}
-        <div className="crawl-prompt-box">
+          {/* Divider */}
+          <div className="crawl-card__divider" />
+
+          {/* Prompt area */}
           <textarea
             ref={inputRef}
-            className="crawl-prompt-input"
-            placeholder={
-              "Describe what data you want to extract…\n\nExamples:\n• Extract product names, prices, and ratings\n• Get all article titles, authors, and publish dates\n• Scrape job listings with company, title, and salary\n\nPress ⌘+Enter to start"
-            }
+            className="crawl-card__prompt"
+            placeholder={"Describe what data you want to extract…\n\nExamples:\n• Product names, prices, and ratings\n• Article titles, authors, and publish dates\n• Job listings with company, title, and salary\n\n⌘+Enter to run"}
             value={instructions}
             onChange={(e) => setInstructions(e.target.value)}
             onKeyDown={handleKeyDown}
-            rows={6}
+            rows={5}
             disabled={isRunning || disabled}
           />
-          <div className="crawl-prompt-footer">
-            <div className="crawl-model-badge" onClick={() => setShowAdvanced((v) => !v)}>
-              <Zap size={11} />
+
+          {/* Footer bar */}
+          <div className="crawl-card__footer">
+            <button
+              type="button"
+              className="crawl-card__model-pill"
+              onClick={() => setShowAdvanced((v) => !v)}
+              title="Configure model and options"
+            >
+              <Zap size={10} />
               <span>{selectedModelInfo?.name ?? selectedModel}</span>
-              <ChevronDown size={11} />
-            </div>
-            <div className="crawl-prompt-actions">
+              <span className="crawl-card__model-pill-sep">·</span>
+              <span className="crawl-card__model-pill-lang">{language === "typescript" ? "TS" : "PY"}</span>
+              <ChevronDown size={10} style={{ opacity: 0.6 }} />
+            </button>
+
+            <div className="crawl-card__actions">
               {isRunning && onCancel && (
                 <button type="button" className="btn btn-ghost btn-sm" onClick={onCancel}>
                   <X size={13} />
@@ -171,20 +185,21 @@ export default function CrawlInterface({
               )}
               <button
                 type="submit"
-                className="btn btn-primary btn-sm crawl-send-btn"
+                className="crawl-card__send-btn"
                 disabled={!canSubmit}
+                aria-label="Start scraper"
               >
                 {isRunning ? (
                   <>
-                    <motion.div animate={{ rotate: 360 }} transition={{ duration: 1.2, repeat: Infinity, ease: "linear" }}>
-                      <Loader2 size={13} />
-                    </motion.div>
-                    Running…
+                    <motion.span animate={{ rotate: 360 }} transition={{ duration: 1.2, repeat: Infinity, ease: "linear" }} style={{ display: "flex" }}>
+                      <Loader2 size={14} />
+                    </motion.span>
+                    <span>Running…</span>
                   </>
                 ) : (
                   <>
-                    <Send size={13} />
-                    Start
+                    <Send size={14} />
+                    <span>Run</span>
                   </>
                 )}
               </button>
@@ -203,14 +218,22 @@ export default function CrawlInterface({
               className="crawl-advanced"
             >
               <div className="crawl-advanced__inner">
+                {/* Header row */}
+                <div className="crawl-adv-header">
+                  <Settings2 size={13} style={{ color: "var(--text-4)" }} />
+                  <span className="crawl-adv-header-title">Options</span>
+                  <button type="button" className="crawl-advanced-close-inline" onClick={() => setShowAdvanced(false)}>
+                    <X size={13} />
+                  </button>
+                </div>
+
                 {/* Model selection */}
                 <div className="crawl-adv-section">
                   <div className="crawl-adv-label">
-                    <Zap size={12} />
+                    <Zap size={11} />
                     AI Model
                   </div>
 
-                  {/* Exe presets — shown first */}
                   {exeModels.length > 0 && (
                     <div style={{ marginBottom: "var(--space-sm)" }}>
                       <div className="crawl-adv-sublabel">Scrapex Presets</div>
@@ -227,14 +250,13 @@ export default function CrawlInterface({
                     </div>
                   )}
 
-                  {/* Other models — collapsed by default */}
                   <ExpandableModelGroup models={otherModels} selectedModel={selectedModel} onSelect={setSelectedModel} />
                 </div>
 
                 {/* Language */}
                 <div className="crawl-adv-section">
                   <div className="crawl-adv-label">
-                    <FileCode size={12} />
+                    <FileCode size={11} />
                     Output Language
                   </div>
                   <div className="crawl-toggle-group">
@@ -254,7 +276,7 @@ export default function CrawlInterface({
                 {/* Extraction mode */}
                 <div className="crawl-adv-section">
                   <div className="crawl-adv-label">
-                    <Shield size={12} />
+                    <Shield size={11} />
                     Extraction Mode
                   </div>
                   <div className="crawl-toggle-group">
@@ -301,14 +323,6 @@ export default function CrawlInterface({
                   </motion.div>
                 )}
               </div>
-
-              <button
-                type="button"
-                className="crawl-advanced-close"
-                onClick={() => setShowAdvanced(false)}
-              >
-                <ChevronUp size={13} /> Hide options
-              </button>
             </motion.div>
           )}
         </AnimatePresence>
@@ -319,8 +333,8 @@ export default function CrawlInterface({
             className="crawl-show-options"
             onClick={() => setShowAdvanced(true)}
           >
-            <ChevronDown size={12} />
-            Options
+            <ChevronDown size={11} />
+            Configure options
           </button>
         )}
       </form>
@@ -336,15 +350,15 @@ export default function CrawlInterface({
           >
             <motion.div
               className="crawl-confirm-dialog"
-              initial={{ scale: 0.92, opacity: 0, y: 10 }}
+              initial={{ scale: 0.94, opacity: 0, y: 12 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.92, opacity: 0, y: 10 }}
+              exit={{ scale: 0.94, opacity: 0, y: 12 }}
               transition={{ duration: 0.18 }}
             >
-              <div className="crawl-confirm-title">Start crawl?</div>
+              <div className="crawl-confirm-title">Ready to scrape?</div>
               <div className="crawl-confirm-details">
                 <div className="crawl-confirm-url">{url}</div>
-                <div className="crawl-confirm-instruction">{instructions.slice(0, 120)}{instructions.length > 120 ? "…" : ""}</div>
+                <div className="crawl-confirm-instruction">{instructions.slice(0, 140)}{instructions.length > 140 ? "…" : ""}</div>
               </div>
               <div className="crawl-confirm-meta">
                 <span className="badge badge-exe">{selectedModelInfo?.name ?? selectedModel}</span>
@@ -406,7 +420,6 @@ function ExpandableModelGroup({
 }) {
   const [expanded, setExpanded] = useState(false);
 
-  // If selected model is in this group, expand automatically
   useEffect(() => {
     if (models.some((m) => m.id === selectedModel)) setExpanded(true);
   }, [selectedModel, models]);
@@ -457,3 +470,4 @@ function ExpandableModelGroup({
     </div>
   );
 }
+

@@ -1,6 +1,37 @@
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 import OpenAI from "openai";
-import { getNextKey, GEMINI_PREFIX, OPENROUTER_PREFIX, GROQ_PREFIX } from "./keyRotation.js";
+import { getAllKeys, GEMINI_PREFIX, OPENROUTER_PREFIX, GROQ_PREFIX } from "./keyRotation.js";
+
+// ─── Quota / rate-limit helpers ───────────────────────────────────────────────
+
+/**
+ * Thrown when every API key for a provider has hit its quota.
+ * Callers (LlmProvider) catch this to switch to a different provider.
+ */
+export class ProviderExhaustedError extends Error {
+  readonly provider: string;
+  constructor(provider: string) {
+    super(`All ${provider} API keys are quota-exhausted`);
+    this.name = "ProviderExhaustedError";
+    this.provider = provider;
+  }
+}
+
+/** Detect 429 / quota-exceeded responses from any provider. */
+function isQuotaError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return (
+    msg.includes("429") ||
+    msg.includes("quota") ||
+    msg.includes("rate limit") ||
+    msg.includes("rate_limit") ||
+    msg.includes("too many requests") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("exceeded your current quota")
+  );
+}
+
 
 export interface ModelOption {
   id: string;
@@ -464,21 +495,34 @@ async function geminiChat(
   temperature: number,
   maxTokens: number
 ): Promise<string> {
-  const apiKey = getNextKey(GEMINI_PREFIX);
-  if (!apiKey) throw new Error("No Gemini API key available (set GEMINI_API_KEY_1, ...)");
+  const keys = getAllKeys(GEMINI_PREFIX);
+  if (keys.length === 0) throw new ProviderExhaustedError("Gemini");
 
-  const genAI = createGeminiClient(apiKey);
-  const { systemMsg, contents } = buildGeminiContents(messages);
+  let lastError: unknown;
+  for (const apiKey of keys) {
+    try {
+      const genAI = createGeminiClient(apiKey);
+      const { systemMsg, contents } = buildGeminiContents(messages);
+      const model = genAI.getGenerativeModel({
+        model: modelId,
+        systemInstruction: systemMsg,
+        safetySettings: SAFETY_SETTINGS,
+        generationConfig: { temperature, maxOutputTokens: maxTokens },
+      });
+      const result = await model.generateContent({ contents });
+      return result.response.text();
+    } catch (err) {
+      if (isQuotaError(err)) {
+        console.warn(`[aiService] Gemini key quota hit, trying next key…`);
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  console.warn(`[aiService] All Gemini keys exhausted`);
+  throw new ProviderExhaustedError("Gemini");
 
-  const model = genAI.getGenerativeModel({
-    model: modelId,
-    systemInstruction: systemMsg,
-    safetySettings: SAFETY_SETTINGS,
-    generationConfig: { temperature, maxOutputTokens: maxTokens },
-  });
-
-  const result = await model.generateContent({ contents });
-  return result.response.text();
 }
 
 async function* geminiStream(
@@ -487,24 +531,38 @@ async function* geminiStream(
   temperature: number,
   maxTokens: number
 ): AsyncGenerator<string> {
-  const apiKey = getNextKey(GEMINI_PREFIX);
-  if (!apiKey) throw new Error("No Gemini API key available (set GEMINI_API_KEY_1, ...)");
+  const keys = getAllKeys(GEMINI_PREFIX);
+  if (keys.length === 0) throw new ProviderExhaustedError("Gemini");
 
-  const genAI = createGeminiClient(apiKey);
-  const { systemMsg, contents } = buildGeminiContents(messages);
-
-  const model = genAI.getGenerativeModel({
-    model: modelId,
-    systemInstruction: systemMsg,
-    safetySettings: SAFETY_SETTINGS,
-    generationConfig: { temperature, maxOutputTokens: maxTokens },
-  });
-
-  const streamResult = await model.generateContentStream({ contents });
-  for await (const chunk of streamResult.stream) {
-    const text = chunk.text();
-    if (text) yield text;
+  let lastError: unknown;
+  for (const apiKey of keys) {
+    try {
+      const genAI = createGeminiClient(apiKey);
+      const { systemMsg, contents } = buildGeminiContents(messages);
+      const model = genAI.getGenerativeModel({
+        model: modelId,
+        systemInstruction: systemMsg,
+        safetySettings: SAFETY_SETTINGS,
+        generationConfig: { temperature, maxOutputTokens: maxTokens },
+      });
+      const streamResult = await model.generateContentStream({ contents });
+      for await (const chunk of streamResult.stream) {
+        const text = chunk.text();
+        if (text) yield text;
+      }
+      return;
+    } catch (err) {
+      if (isQuotaError(err)) {
+        console.warn(`[aiService] Gemini stream key quota hit, trying next key…`);
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
   }
+  console.warn(`[aiService] All Gemini keys exhausted (stream)`);
+  throw new ProviderExhaustedError("Gemini");
+
 }
 
 // ─── OpenRouter implementation ────────────────────────────────────────────────
@@ -515,17 +573,32 @@ async function openrouterChat(
   temperature: number,
   maxTokens: number
 ): Promise<string> {
-  const apiKey = getNextKey(OPENROUTER_PREFIX);
-  if (!apiKey) throw new Error("No OpenRouter API key available (set OPENROUTER_API_KEY_1, ...)");
+  const keys = getAllKeys(OPENROUTER_PREFIX);
+  if (keys.length === 0) throw new ProviderExhaustedError("OpenRouter");
 
-  const client = createOpenRouterClient(apiKey);
-  const response = await client.chat.completions.create({
-    model: modelId,
-    messages,
-    temperature,
-    max_tokens: maxTokens,
-  });
-  return response.choices[0]?.message?.content ?? "";
+  let lastError: unknown;
+  for (const apiKey of keys) {
+    try {
+      const client = createOpenRouterClient(apiKey);
+      const response = await client.chat.completions.create({
+        model: modelId,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+      });
+      return response.choices[0]?.message?.content ?? "";
+    } catch (err) {
+      if (isQuotaError(err)) {
+        console.warn(`[aiService] OpenRouter key quota hit, trying next key…`);
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  console.warn(`[aiService] All OpenRouter keys exhausted`);
+  throw new ProviderExhaustedError("OpenRouter");
+
 }
 
 async function* openrouterStream(
@@ -534,22 +607,37 @@ async function* openrouterStream(
   temperature: number,
   maxTokens: number
 ): AsyncGenerator<string> {
-  const apiKey = getNextKey(OPENROUTER_PREFIX);
-  if (!apiKey) throw new Error("No OpenRouter API key available (set OPENROUTER_API_KEY_1, ...)");
+  const keys = getAllKeys(OPENROUTER_PREFIX);
+  if (keys.length === 0) throw new ProviderExhaustedError("OpenRouter");
 
-  const client = createOpenRouterClient(apiKey);
-  const stream = await client.chat.completions.create({
-    model: modelId,
-    messages,
-    temperature,
-    max_tokens: maxTokens,
-    stream: true,
-  });
-
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta?.content;
-    if (delta) yield delta;
+  let lastError: unknown;
+  for (const apiKey of keys) {
+    try {
+      const client = createOpenRouterClient(apiKey);
+      const stream = await client.chat.completions.create({
+        model: modelId,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+        stream: true,
+      });
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content;
+        if (delta) yield delta;
+      }
+      return;
+    } catch (err) {
+      if (isQuotaError(err)) {
+        console.warn(`[aiService] OpenRouter stream key quota hit, trying next key…`);
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
   }
+  console.warn(`[aiService] All OpenRouter keys exhausted (stream)`);
+  throw new ProviderExhaustedError("OpenRouter");
+
 }
 
 // ─── Groq implementation ──────────────────────────────────────────────────────
@@ -560,17 +648,32 @@ async function groqChat(
   temperature: number,
   maxTokens: number
 ): Promise<string> {
-  const apiKey = getNextKey(GROQ_PREFIX);
-  if (!apiKey) throw new Error("No Groq API key available (set GROQ_API_KEY_1, ...)");
+  const keys = getAllKeys(GROQ_PREFIX);
+  if (keys.length === 0) throw new ProviderExhaustedError("Groq");
 
-  const client = createGroqClient(apiKey);
-  const response = await client.chat.completions.create({
-    model: modelId,
-    messages,
-    temperature,
-    max_tokens: maxTokens,
-  });
-  return response.choices[0]?.message?.content ?? "";
+  let lastError: unknown;
+  for (const apiKey of keys) {
+    try {
+      const client = createGroqClient(apiKey);
+      const response = await client.chat.completions.create({
+        model: modelId,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+      });
+      return response.choices[0]?.message?.content ?? "";
+    } catch (err) {
+      if (isQuotaError(err)) {
+        console.warn(`[aiService] Groq key quota hit, trying next key…`);
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  console.warn(`[aiService] All Groq keys exhausted`);
+  throw new ProviderExhaustedError("Groq");
+
 }
 
 async function* groqStream(
@@ -579,21 +682,36 @@ async function* groqStream(
   temperature: number,
   maxTokens: number
 ): AsyncGenerator<string> {
-  const apiKey = getNextKey(GROQ_PREFIX);
-  if (!apiKey) throw new Error("No Groq API key available (set GROQ_API_KEY_1, ...)");
+  const keys = getAllKeys(GROQ_PREFIX);
+  if (keys.length === 0) throw new ProviderExhaustedError("Groq");
 
-  const client = createGroqClient(apiKey);
-  const stream = await client.chat.completions.create({
-    model: modelId,
-    messages,
-    temperature,
-    max_tokens: maxTokens,
-    stream: true,
-  });
-
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta?.content;
-    if (delta) yield delta;
+  let lastError: unknown;
+  for (const apiKey of keys) {
+    try {
+      const client = createGroqClient(apiKey);
+      const stream = await client.chat.completions.create({
+        model: modelId,
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+        stream: true,
+      });
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content;
+        if (delta) yield delta;
+      }
+      return;
+    } catch (err) {
+      if (isQuotaError(err)) {
+        console.warn(`[aiService] Groq stream key quota hit, trying next key…`);
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
   }
+  console.warn(`[aiService] All Groq keys exhausted (stream)`);
+  throw new ProviderExhaustedError("Groq");
+
 }
 

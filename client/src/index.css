@@ -1814,7 +1814,7 @@ code, pre { font-family: var(--font-mono); }
 /* ─── Dashboard main area ────────────────────────────────────────────────── */
 .dashboard-main {
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -1851,6 +1851,8 @@ code, pre { font-family: var(--font-mono); }
   max-width: 880px;
   width: 100%;
   margin: 0 auto;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 /* ─── Responsive sidebar collapse ────────────────────────────────────────── */
@@ -2830,32 +2832,46 @@ code, pre { font-family: var(--font-mono); }
 
 /* ─── Crawl Interface ────────────────────────────────────────────────────── */
 .crawl-interface {
-  max-width: 760px;
+  max-width: 720px;
   margin: 0 auto;
 }
 
 .crawl-interface__header {
-  margin-bottom: 28px;
+  margin-bottom: 32px;
 }
 
-.crawl-interface__title-row {
+.crawl-interface__hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.crawl-interface__hero-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 100%);
+  border: 1px solid var(--border-bright);
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  justify-content: center;
+  color: var(--text-2);
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .crawl-interface__title {
-  font-size: 1.25rem;
-  font-weight: 600;
+  font-size: 1.35rem;
+  font-weight: 700;
   color: var(--white);
-  letter-spacing: -0.03em;
-  margin: 0;
+  letter-spacing: -0.04em;
+  margin: 0 0 6px;
+  line-height: 1.2;
 }
 
 .crawl-interface__subtitle {
-  font-size: 0.85rem;
-  color: var(--text-3);
+  font-size: 0.84rem;
+  color: var(--text-4);
   line-height: 1.6;
   margin: 0;
 }
@@ -2863,68 +2879,54 @@ code, pre { font-family: var(--font-mono); }
 .crawl-interface__form {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-/* URL input */
-.crawl-input-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.crawl-input-url {
-  display: flex;
-  align-items: center;
   gap: 8px;
+}
+
+/* ─── Unified Chat Card ──────────────────────────────────────────────────── */
+.crawl-card {
   background: var(--bg-2);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 14px;
-  transition: border-color var(--transition);
+  border-radius: 14px;
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.crawl-input-url:focus-within {
-  border-color: var(--border-bright);
+.crawl-card:focus-within {
+  border-color: rgba(255,255,255,0.18);
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.03), 0 4px 20px rgba(0,0,0,0.3);
 }
 
-.crawl-url-input {
+/* URL row */
+.crawl-card__url-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.crawl-card__url-icon {
+  color: var(--text-4);
+  flex-shrink: 0;
+}
+
+.crawl-card__url-input {
   flex: 1;
   background: none;
   border: none;
   outline: none;
-  color: var(--text);
-  font-size: 0.9rem;
+  color: var(--text-2);
+  font-size: 0.87rem;
   font-family: var(--font-mono);
 }
 
-.crawl-url-input::placeholder {
-  color: var(--text-4);
-}
+.crawl-card__url-input::placeholder { color: var(--text-4); }
+.crawl-card__url-input:disabled { opacity: 0.45; }
 
-.crawl-url-input:disabled {
-  opacity: 0.5;
-}
+.crawl-card__divider { display: none; }
 
-.crawl-url-error {
-  font-size: 0.75rem;
-  color: var(--step-error);
-}
-
-/* Prompt box */
-.crawl-prompt-box {
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  transition: border-color var(--transition);
-}
-
-.crawl-prompt-box:focus-within {
-  border-color: var(--border-bright);
-}
-
-.crawl-prompt-input {
+/* Prompt area */
+.crawl-card__prompt {
   width: 100%;
   background: none;
   border: none;
@@ -2932,53 +2934,101 @@ code, pre { font-family: var(--font-mono); }
   color: var(--text);
   font-size: 0.88rem;
   font-family: var(--font-sans);
-  line-height: 1.6;
+  line-height: 1.65;
   resize: none;
-  padding: 16px 18px 8px;
+  padding: 14px 16px 8px;
+  box-sizing: border-box;
 }
-
-.crawl-prompt-input::placeholder {
+.crawl-card__prompt::placeholder {
   color: var(--text-4);
   white-space: pre-line;
 }
+.crawl-card__prompt:disabled { opacity: 0.45; }
 
-.crawl-prompt-input:disabled {
-  opacity: 0.5;
-}
-
-.crawl-prompt-footer {
+/* Footer bar */
+.crawl-card__footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px 10px;
+  padding: 8px 10px 10px;
   border-top: 1px solid var(--border);
-}
-
-.crawl-model-badge {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 0.75rem;
-  color: var(--text-4);
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: var(--radius);
-  transition: color var(--transition), background var(--transition);
-}
-
-.crawl-model-badge:hover {
-  color: var(--text-2);
-  background: var(--bg-3);
-}
-
-.crawl-prompt-actions {
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 
-.crawl-send-btn {
-  min-width: 80px;
+.crawl-card__model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.73rem;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  font-family: var(--font-sans);
+  white-space: nowrap;
+}
+.crawl-card__model-pill:hover {
+  background: var(--bg-4);
+  color: var(--text-2);
+  border-color: var(--border-bright);
+}
+.crawl-card__model-pill-sep {
+  opacity: 0.4;
+}
+.crawl-card__model-pill-lang {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  opacity: 0.7;
+}
+
+.crawl-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.crawl-card__send-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--white);
+  color: var(--bg);
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s, transform 0.1s;
+  white-space: nowrap;
+}
+.crawl-card__send-btn:hover:not(:disabled) {
+  background: rgba(255,255,255,0.88);
+  transform: translateY(-1px);
+}
+.crawl-card__send-btn:active:not(:disabled) { transform: translateY(0); }
+.crawl-card__send-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+[data-theme="light"] .crawl-card__send-btn {
+  background: #111;
+  color: #fff;
+}
+[data-theme="light"] .crawl-card__send-btn:hover:not(:disabled) {
+  background: #222;
+}
+
+/* Keep old URL/prompt classes for backward compat (used nowhere else but kept for safety) */
+.crawl-url-error {
+  font-size: 0.75rem;
+  color: var(--step-error);
+  white-space: nowrap;
 }
 
 /* Show options button */
@@ -2989,9 +3039,9 @@ code, pre { font-family: var(--font-mono); }
   background: none;
   border: none;
   color: var(--text-4);
-  font-size: 0.75rem;
+  font-size: 0.73rem;
   cursor: pointer;
-  padding: 4px 0;
+  padding: 3px 0;
   transition: color var(--transition);
   font-family: var(--font-sans);
 }
@@ -3001,17 +3051,53 @@ code, pre { font-family: var(--font-mono); }
 .crawl-advanced {
   background: var(--bg-2);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: 12px;
   overflow: hidden;
 }
 
 .crawl-advanced__inner {
-  padding: 18px 18px 8px;
+  padding: 16px 16px 14px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
 }
 
+/* Header row with inline close */
+.crawl-adv-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: -4px;
+}
+
+.crawl-adv-header-title {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  flex: 1;
+}
+
+.crawl-advanced-close-inline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-4);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+.crawl-advanced-close-inline:hover {
+  color: var(--text-2);
+  background: var(--bg-3);
+}
+
+/* Keep old close button class for any remaining usages */
 .crawl-advanced-close {
   display: flex;
   align-items: center;
