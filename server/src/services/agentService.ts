@@ -2,7 +2,7 @@ import { Response } from "express";
 import { chatCompletion, streamCompletion } from "./aiService.js";
 import { generateApiFileTemplate, generatePyFileTemplate, generateDataApiTemplate, generateDataApiPyTemplate } from "../templates/apiTemplate.js";
 import { updateSession } from "./supabaseService.js";
-import { fetchAndAnalyzePage, buildPageReport } from "./pageFetcher.js";
+import { fetchAndAnalyzePage, buildPageReport, FetchedPage } from "./pageFetcher.js";
 
 export interface AgentStep {
   type:
@@ -57,7 +57,7 @@ export async function runAgentSession(
   };
 
   try {
-    // ── Step 1: Actually fetch the page ──────────────────────────────────────
+    // ── Step 1: Actually fetch the page (with retry + alternative URLs) ───────
     emit({
       type: "fetching",
       message: "Fetching target website",
@@ -69,9 +69,71 @@ export async function runAgentSession(
     let fetchedHtmlSnippet = "";
     let discoveredEndpointsText = "";
     let inlineDataText = "";
+    let probedApiText = "";
+    let isCloudflareBlocked = false;
+    let liveApiEndpoints: { url: string; sampleData: string }[] = [];
 
-    try {
-      const page = await fetchAndAnalyzePage(websiteUrl);
+    const tryFetchPage = async (url: string): Promise<FetchedPage | null> => {
+      try {
+        return await fetchAndAnalyzePage(url);
+      } catch {
+        return null;
+      }
+    };
+
+    let page = await tryFetchPage(websiteUrl);
+
+    if (page && page.isCloudflareBlocked) {
+      isCloudflareBlocked = true;
+      emit({
+        type: "browsing",
+        message: "Cloudflare protection detected",
+        detail: "Site is behind Cloudflare — generated scraper will use Playwright browser to bypass this. Trying alternative URLs…",
+      });
+
+      for (const altUrl of page.alternativeUrls.slice(0, 4)) {
+        const altPage = await tryFetchPage(altUrl);
+        if (altPage && !altPage.isCloudflareBlocked && altPage.html.length > 1000) {
+          emit({
+            type: "browsing",
+            message: `Found accessible page: ${altUrl}`,
+            detail: `Status ${altPage.statusCode} · Merging discovered data…`,
+          });
+          page.discoveredEndpoints.push(...altPage.discoveredEndpoints);
+          page.probedEndpoints.push(...altPage.probedEndpoints);
+          page.inlineJsonData.push(...altPage.inlineJsonData);
+          page.linkUrls.push(...altPage.linkUrls);
+          if (altPage.html.length > page.html.length) {
+            page.html = altPage.html;
+            page.truncatedHtml = altPage.truncatedHtml;
+          }
+          break;
+        }
+      }
+    }
+
+    if (page && (page.html.length < 500 || page.discoveredEndpoints.length === 0) && !page.isCloudflareBlocked) {
+      emit({
+        type: "browsing",
+        message: "Minimal data found — probing alternative URLs",
+        detail: "Checking homepage and common API paths for more data…",
+      });
+
+      for (const altUrl of (page.alternativeUrls ?? []).slice(0, 5)) {
+        const altPage = await tryFetchPage(altUrl);
+        if (altPage && altPage.html.length > page.html.length) {
+          page.discoveredEndpoints.push(...altPage.discoveredEndpoints);
+          page.probedEndpoints.push(...altPage.probedEndpoints);
+          page.inlineJsonData.push(...altPage.inlineJsonData);
+          if (altPage.html.length > page.html.length) {
+            page.html = altPage.html;
+            page.truncatedHtml = altPage.truncatedHtml;
+          }
+        }
+      }
+    }
+
+    if (page) {
       pageReport = buildPageReport(page);
       endpointCount = page.discoveredEndpoints.length;
       fetchedHtmlSnippet = page.truncatedHtml;
@@ -80,21 +142,37 @@ export async function runAgentSession(
         .join("\n");
       inlineDataText = page.inlineJsonData.map((d, i) => `[Block ${i + 1}]: ${d.slice(0, 2000)}`).join("\n");
 
+      liveApiEndpoints = page.probedEndpoints
+        .filter((ep) => ep.isJsonApi)
+        .map((ep) => ({ url: ep.url, sampleData: ep.sampleData }));
+
+      probedApiText = page.probedEndpoints
+        .map((ep) => {
+          let line = `[${ep.method}] ${ep.url} → Status ${ep.statusCode} (${ep.contentType})`;
+          if (ep.isJsonApi) {
+            line += `\n  ✅ LIVE JSON API — Sample: ${ep.sampleData.slice(0, 1000)}`;
+          }
+          return line;
+        })
+        .join("\n");
+
+      const liveApiCount = liveApiEndpoints.length;
       emit({
         type: "browsing",
         message: "Page fetched successfully",
-        detail: `Status ${page.statusCode} · ${endpointCount} API endpoint(s) discovered · ${page.scriptSources.length} scripts · ${page.inlineJsonData.length} inline data blocks`,
+        detail: `Status ${page.statusCode} · ${endpointCount} endpoint(s) in HTML · ${liveApiCount} live JSON API(s) confirmed · ${page.inlineJsonData.length} inline data blocks${isCloudflareBlocked ? " · ⚠️ Cloudflare detected" : ""}`,
         data: { endpointCount },
       });
-    } catch (fetchErr) {
-      const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
-      pageReport = `FETCH FAILED: ${fetchMsg}\nURL: ${websiteUrl}\nThe page could not be fetched directly. The scraper will need to use a browser (Playwright) to load this page.`;
+    } else {
+      const fetchMsg = "All fetch attempts failed";
+      pageReport = `FETCH FAILED: ${fetchMsg}\nURL: ${websiteUrl}\nThe page could not be fetched directly. The scraper MUST use Playwright (headless browser) to load this page — plain HTTP requests will not work.`;
       fetchedHtmlSnippet = "";
+      isCloudflareBlocked = true;
 
       emit({
         type: "browsing",
-        message: "Direct fetch failed — site may require browser rendering",
-        detail: fetchMsg,
+        message: "Direct fetch failed — site requires browser rendering",
+        detail: "Generated scraper will use Playwright to navigate the site with a real browser.",
       });
     }
 
@@ -109,13 +187,20 @@ export async function runAgentSession(
 
     const analysisPrompt = `You are an expert web scraping and API reverse-engineering engineer. You MUST base your analysis ENTIRELY on the REAL page data provided below. Do NOT guess or assume anything about the website — only describe what you can see in the actual fetched data.
 
+CRITICAL: You are a PERSISTENT engineer. If the initial page has no data, you MUST identify alternative approaches. NEVER give up. Always recommend trying the homepage, API endpoints, sitemap, or network interception.
+
 Website URL: ${websiteUrl}
 User Instructions: ${instructions}
 ${isDataApi ? `\nExtraction Mode: DATA API (authenticated user data extraction)\nUser provided credentials: ${credentials?.email ? "email" : ""}${credentials?.password ? ", password" : ""}${credentials?.token ? ", token/API key" : ""}${credentials?.cookies ? ", cookies" : ""}` : "Extraction Mode: SCRAPER (public data extraction)"}
+${isCloudflareBlocked ? "\n⚠️ CLOUDFLARE PROTECTION DETECTED: The site blocks plain HTTP requests. The scraper MUST use Playwright (headless browser) for ALL requests. Do NOT suggest using fetch/axios/requests directly — they will be blocked." : ""}
 
 === ACTUAL FETCHED PAGE DATA ===
 ${pageReport}
 === END PAGE DATA ===
+
+${probedApiText ? `=== PROBED API ENDPOINTS (actual HTTP responses received) ===\n${probedApiText}\n=== END PROBED ENDPOINTS ===\n\nIMPORTANT: The above are REAL responses from actual API endpoint probes. Any endpoint marked ✅ LIVE JSON API is a confirmed working API that returns structured JSON data. The scraper should PRIORITIZE these over HTML scraping.` : ""}
+
+${liveApiEndpoints.length > 0 ? `\n🎯 PRIORITY: ${liveApiEndpoints.length} LIVE JSON API(s) were confirmed. The generated scraper should call these APIs directly via Playwright's request interception or page.evaluate(fetch()) rather than parsing HTML.` : ""}
 
 Based ONLY on the actual data above, provide your analysis:
 
@@ -135,12 +220,20 @@ Based ONLY on the actual data above, provide your analysis:
 
 6. PAGINATION: Based on the actual links and any pagination-related URLs/endpoints you see, describe how pagination works.
 
-7. RECOMMENDED STRATEGY: Based ONLY on what you actually found:
-   - If API endpoints were discovered → describe how to call them directly
-   - If inline JSON data exists → describe how to extract it
-   - If neither → describe the HTML selectors to use
+7. RECOMMENDED STRATEGY (PRIORITY ORDER — always prefer APIs over HTML):
+   a. If LIVE JSON APIs were confirmed in probed endpoints → use them FIRST via Playwright network interception or page.evaluate(fetch())
+   b. If API endpoints were discovered in HTML → try calling them via Playwright
+   c. If inline JSON data exists → extract it from script tags or window state
+   d. If the page is Cloudflare-blocked → use Playwright browser to load the page and intercept network requests to discover APIs
+   e. If none of the above → use Playwright DOM extraction with the HTML selectors you found
+   f. ALWAYS add a fallback: if the target URL has no data, navigate to the homepage and try again
 
-IMPORTANT: Be specific and reference actual URLs, selectors, and data from the fetched page. Do NOT make up endpoints or selectors that aren't in the data.`;
+8. ALTERNATIVE APPROACHES (if primary strategy might fail):
+   - List backup extraction strategies
+   - Identify the homepage URL and any other content-rich pages
+   - Suggest network interception patterns to catch API calls made by the frontend
+
+IMPORTANT: Be specific and reference actual URLs, selectors, and data from the fetched page. Do NOT make up endpoints or selectors that aren't in the data. NEVER suggest giving up — always provide at least 2-3 alternative strategies.`;
 
     const analysis = await chatCompletion(modelId, [
       { role: "user", content: analysisPrompt },
@@ -155,21 +248,29 @@ IMPORTANT: Be specific and reference actual URLs, selectors, and data from the f
 
     await sleep(300);
 
-    // ── Step 3: Endpoint discovery and mapping ───────────────────────────────
-    if (endpointCount > 0 || isDataApi) {
-      emit({
-        type: "discovering",
-        message: isDataApi ? "Mapping authentication & data endpoints" : "Mapping discovered API endpoints",
-        detail: `Found ${endpointCount} endpoint(s) in page source. AI is planning how to use them…`,
-      });
+    // ── Step 3: Endpoint discovery and mapping (always run) ────────────────
+    const liveApiCount = liveApiEndpoints.length;
+    emit({
+      type: "discovering",
+      message: liveApiCount > 0
+        ? `Mapping ${liveApiCount} confirmed live API endpoint(s)`
+        : (isDataApi ? "Mapping authentication & data endpoints" : "Probing for API endpoints"),
+      detail: `${endpointCount} endpoint(s) in HTML · ${liveApiCount} live JSON API(s) confirmed · AI mapping how to use them…`,
+    });
 
-      const endpointPrompt = `You are an API reverse-engineering expert. Based on the REAL endpoints discovered from the page source, create a detailed endpoint map.
+    const endpointPrompt = `You are an API reverse-engineering expert. Your job is to find and map ALL usable API endpoints for data extraction. Be AGGRESSIVE — always look for API-based approaches first.
 
 Website URL: ${websiteUrl}
 ${isDataApi ? `Authentication mode: The user wants to extract per-user/authenticated data.\nCredentials available: ${credentials?.email ? "email" : ""}${credentials?.password ? ", password" : ""}${credentials?.token ? ", token" : ""}${credentials?.cookies ? ", cookies" : ""}` : "Public data mode: Extract publicly available data."}
+${isCloudflareBlocked ? "\n⚠️ CLOUDFLARE DETECTED: Plain HTTP requests are blocked. ALL requests must go through Playwright browser. Use page.evaluate(() => fetch('/api/...')) or intercept network responses." : ""}
 
-=== DISCOVERED ENDPOINTS ===
-${discoveredEndpointsText || "No endpoints discovered in HTML. Check inline data and scripts for API patterns."}
+=== DISCOVERED ENDPOINTS FROM HTML ===
+${discoveredEndpointsText || "No endpoints discovered in static HTML."}
+
+=== PROBED API ENDPOINTS (actual HTTP responses) ===
+${probedApiText || "No API endpoints were successfully probed."}
+
+${liveApiEndpoints.length > 0 ? `=== ✅ CONFIRMED LIVE JSON APIs ===\n${liveApiEndpoints.map((ep) => `URL: ${ep.url}\nSample data: ${ep.sampleData.slice(0, 1500)}`).join("\n\n")}\n\nThese APIs are CONFIRMED WORKING and return real JSON data. The scraper MUST use these as the PRIMARY data source.` : ""}
 
 === INLINE DATA/STATE ===
 ${inlineDataText || "No inline JSON data found."}
@@ -185,26 +286,32 @@ For each usable endpoint, provide:
 2. HTTP method
 3. Required headers (Content-Type, Authorization format, User-Agent, etc.)
 4. Query parameters or request body format
-5. Expected response structure
+5. Expected response structure (based on actual sample data if available)
 6. Pagination mechanism (if applicable)
 
 ${isDataApi ? "Also describe the authentication flow:\n- Which endpoint handles login/auth?\n- What is the request body format?\n- How are session tokens returned (cookies, headers, JSON body)?\n- How to pass the token to subsequent data endpoints?" : ""}
 
+STRATEGY PRIORITY:
+1. If live JSON APIs were confirmed → these are the PRIMARY data source
+2. If other API endpoints were discovered → describe how to call them via Playwright
+3. If Cloudflare is present → ALL requests must go through Playwright's browser context
+4. Network interception via Playwright → describe patterns to intercept (e.g. page.on('response'))
+5. DOM extraction → only as a LAST RESORT
+
 ONLY describe endpoints that actually appear in the discovered data. Do NOT invent endpoints.`;
 
-      const endpointMap = await chatCompletion(modelId, [
-        { role: "user", content: endpointPrompt },
-      ], 0.2, 3072);
+    const endpointMap = await chatCompletion(modelId, [
+      { role: "user", content: endpointPrompt },
+    ], 0.2, 3072);
 
-      emit({
-        type: "discovering",
-        message: "Endpoint mapping complete",
-        detail: endpointMap.slice(0, 300) + (endpointMap.length > 300 ? "…" : ""),
-        data: { endpointMap },
-      });
+    emit({
+      type: "discovering",
+      message: "Endpoint mapping complete",
+      detail: endpointMap.slice(0, 300) + (endpointMap.length > 300 ? "…" : ""),
+      data: { endpointMap },
+    });
 
-      await sleep(300);
-    }
+    await sleep(300);
 
     // ── Step 4: Schema generation based on REAL data ─────────────────────────
     emit({
@@ -212,6 +319,10 @@ ONLY describe endpoints that actually appear in the discovered data. Do NOT inve
       message: "Generating data schema from real page content",
       detail: "Inferring fields from actual data found on the page…",
     });
+
+    const liveApiSample = liveApiEndpoints.length > 0
+      ? `\n\nLive API sample data:\n${liveApiEndpoints[0].sampleData.slice(0, 2000)}\n\nUse the actual field names from this API response.`
+      : "";
 
     const schemaPrompt = `Based on the REAL data found on this website, generate a JSON schema that describes each record the scraper will extract.
 
@@ -221,7 +332,7 @@ Analysis: ${analysis.slice(0, 1500)}
 
 IMPORTANT: The schema fields MUST correspond to actual data visible in the fetched page content. Do not include fields that don't exist on this website.
 
-${inlineDataText ? `Inline data found:\n${inlineDataText.slice(0, 2000)}\n\nUse the actual field names from this data where possible.` : ""}
+${inlineDataText ? `Inline data found:\n${inlineDataText.slice(0, 2000)}\n\nUse the actual field names from this data where possible.` : ""}${liveApiSample}
 
 Return ONLY a valid JSON object representing one extracted record. Use camelCase field names. No explanation, no markdown fences.`;
 
@@ -259,7 +370,12 @@ Return ONLY a valid JSON object representing one extracted record. Use camelCase
 
     const refinePrompt = `You are a senior ${langLabel} developer specializing in web scraping and API reverse-engineering. Write a precise technical specification for a ${isDataApi ? "DATA API extraction" : "scraper"} script.
 
-CRITICAL: Your specification MUST be based on the REAL page data and endpoints discovered below. Do NOT invent or assume any endpoints, selectors, or data structures that aren't in the actual data.
+CRITICAL RULES:
+1. Your specification MUST be based on the REAL page data and endpoints discovered below.
+2. Do NOT invent or assume any endpoints, selectors, or data structures that aren't in the actual data.
+3. The scraper must NEVER give up — it must try multiple strategies until it finds data.
+4. ALL HTTP requests must go through Playwright browser (page.goto, page.evaluate(fetch), or network interception) — NEVER use raw fetch/axios/requests outside the browser context.
+${isCloudflareBlocked ? "5. ⚠️ CLOUDFLARE IS ACTIVE — the scraper MUST use Playwright for everything. No direct HTTP requests." : ""}
 
 Website URL: ${websiteUrl}
 Instructions: ${instructions}
@@ -270,23 +386,36 @@ Data schema: ${JSON.stringify(schema, null, 2)}
 ${analysis.slice(0, 2000)}
 
 === REAL DISCOVERED ENDPOINTS ===
-${discoveredEndpointsText || "None found — will need HTML/browser extraction"}
+${discoveredEndpointsText || "None found in static HTML"}
+
+=== PROBED API ENDPOINTS (actual responses) ===
+${probedApiText || "No endpoints probed"}
+
+${liveApiEndpoints.length > 0 ? `=== ✅ CONFIRMED LIVE JSON APIs ===\n${liveApiEndpoints.map((ep) => `URL: ${ep.url}\nSample: ${ep.sampleData.slice(0, 1000)}`).join("\n\n")}\n\nThese are CONFIRMED WORKING. Use them as PRIMARY data source.` : ""}
 
 === REAL INLINE DATA ===
 ${inlineDataText ? inlineDataText.slice(0, 2000) : "None found"}
+
+=== ENDPOINT MAP ===
+${endpointMap.slice(0, 2000)}
 
 === REAL HTML SNIPPET ===
 ${fetchedHtmlSnippet.slice(0, 8000)}
 
 Write a detailed spec covering:
-1. EXTRACTION STRATEGY — Based on what was ACTUALLY found:
-   ${endpointCount > 0 ? "- API endpoints WERE found. Describe exactly which ones to call and how." : "- No API endpoints found. Describe the HTML selectors from the actual page structure."}
-   ${inlineDataText ? "- Inline JSON data WAS found. Describe how to extract it." : ""}
-2. ${isDataApi ? "AUTHENTICATION FLOW — How to authenticate using the user's credentials based on the actual auth endpoints found." : "PUBLIC DATA ACCESS — How to access the public data."}
-3. EXACT IMPLEMENTATION — Reference real URLs, real CSS selectors from the HTML, real JSON field names from inline data.
-4. PAGINATION — Based on actual pagination patterns found in the page.
-5. ERROR HANDLING — Retry logic, timeouts, missing fields.
-6. OUTPUT — Structured JSON matching the schema.
+1. EXTRACTION STRATEGY (in priority order):
+   a. ${liveApiEndpoints.length > 0 ? "✅ Live JSON APIs confirmed — call them via Playwright (page.evaluate(() => fetch(url))) as PRIMARY source" : "No live APIs confirmed"}
+   b. ${endpointCount > 0 ? "API endpoints found in HTML — try calling them through the browser" : "No API endpoints found in HTML"}
+   c. ${inlineDataText ? "Inline JSON data found — extract it from script tags" : "No inline data found"}
+   d. Network interception — use page.on('response') to capture API calls made by the frontend
+   e. DOM extraction — as fallback, use real CSS selectors from the HTML
+   f. HOMEPAGE FALLBACK — if the target URL has no data, navigate to the homepage and try all strategies again
+2. ${isDataApi ? "AUTHENTICATION FLOW — How to authenticate using the user's credentials." : "PUBLIC DATA ACCESS — How to access the public data."}
+3. EXACT IMPLEMENTATION — Reference real URLs, real CSS selectors, real JSON field names.
+4. PAGINATION — Based on actual patterns found.
+5. ERROR HANDLING — Retry logic (at least 3 retries), timeouts, fallback to alternative URLs.
+6. VALIDATION — After extraction, check if results are non-empty. If empty, try the next strategy.
+7. OUTPUT — JSON with envelope: { total_items, scraped_at, source_url, items: [...] }
 
 Do not include comments in code snippets.`;
 
@@ -319,9 +448,21 @@ Do not include comments in code snippets.`;
 Website URL: ${websiteUrl}
 Extraction approach from spec: ${refinedPrompt.slice(0, 2000)}
 Discovered endpoints: ${discoveredEndpointsText || "None — HTML extraction"}
+${probedApiText ? `\nProbed API responses:\n${probedApiText.slice(0, 1000)}` : ""}
+${isCloudflareBlocked ? "\n⚠️ Cloudflare detected — the test MUST use Playwright browser, not raw HTTP." : ""}
 
 The test should:
-${isTs ? `
+${isCloudflareBlocked ? (isTs ? `
+1. Use Playwright to load the page in a real browser
+2. Intercept network responses to find JSON API data
+3. Also try extracting data from the DOM
+4. Print PASS/FAIL with actual data found
+5. Be a standalone script that can run with: npx tsx test.ts` : `
+1. Use Playwright to load the page in a real browser
+2. Intercept network responses to find JSON API data
+3. Also try extracting data from the DOM
+4. Print PASS/FAIL with actual data found
+5. Be a standalone script that can run with: python test.py`) : (isTs ? `
 1. Use fetch() (Node.js 18+ built-in) to make a single request to the most important endpoint or URL
 2. Check that the response status is 200
 3. Check that the response contains expected data fields
@@ -331,12 +472,12 @@ ${isTs ? `
 2. Check that the response status is 200
 3. Check that the response contains expected data fields
 4. Print a clear PASS/FAIL result with the actual data received
-5. Be a standalone script that can run with: python test.py`}
+5. Be a standalone script that can run with: python test.py`)}
 
 ${isDataApi && credentials ? `Include authentication using the provided credentials format.` : ""}
 
 RULES:
-- Do NOT use Playwright or any browser — just HTTP requests
+${isCloudflareBlocked ? "- Use Playwright browser — the site is Cloudflare-protected" : "- Do NOT use Playwright or any browser — just HTTP requests"}
 - Do NOT include any comments
 - Return ONLY raw ${langLabel} code, no markdown fences
 - Keep it under 60 lines
@@ -386,12 +527,21 @@ URL: ${websiteUrl}
 User instructions: ${instructions}
 Mode: ${isDataApi ? "DATA API (authenticated)" : "SCRAPER (public data)"}
 Output schema: ${JSON.stringify(schema, null, 2)}
+${isCloudflareBlocked ? "\n⚠️ CLOUDFLARE PROTECTED — ALL requests MUST go through Playwright browser. Do NOT use raw fetch/axios/requests outside the browser." : ""}
 
 === DISCOVERED API ENDPOINTS (${endpointCount}) ===
-${discoveredEndpointsText || "None discovered — use browser-based HTML extraction with Playwright."}
+${discoveredEndpointsText || "None discovered in static HTML."}
+
+=== PROBED API ENDPOINTS (actual responses) ===
+${probedApiText || "No endpoints probed."}
+
+${liveApiEndpoints.length > 0 ? `=== ✅ CONFIRMED LIVE JSON APIs ===\n${liveApiEndpoints.map((ep) => `URL: ${ep.url}\nSample data: ${ep.sampleData.slice(0, 1500)}`).join("\n\n")}\n\n🎯 These APIs are CONFIRMED WORKING. Use them as the PRIMARY data source via Playwright.` : ""}
 
 === INLINE JSON DATA ===
 ${inlineDataText ? inlineDataText.slice(0, 3000) : "None found."}
+
+=== ENDPOINT MAP ===
+${endpointMap.slice(0, 2000)}
 
 === REAL HTML STRUCTURE ===
 ${fetchedHtmlSnippet.slice(0, 12000)}
@@ -409,43 +559,51 @@ Use the actual auth endpoints discovered above to authenticate, then extract per
 
 === MANDATORY IMPLEMENTATION REQUIREMENTS ===
 
-1. DATA DISCOVERY STRATEGY (choose based on what was found above):
-   ${endpointCount > 0 ? `API endpoints WERE found — call them directly with ${isTs ? "fetch() or Playwright request interception" : "requests/httpx or Playwright request interception"}. Use the EXACT endpoint URLs discovered above.` : "No API endpoints found — use Playwright to render the page and extract from the DOM."}
-   ${inlineDataText ? "Inline JSON/state data WAS found — extract it from script tags or window.__STATE__ objects." : ""}
+1. DATA DISCOVERY STRATEGY (PRIORITY ORDER — try each until data is found):
+   ${liveApiEndpoints.length > 0 ? `a. ✅ CONFIRMED APIs — Call these via page.evaluate(() => fetch('${liveApiEndpoints[0].url}')) inside Playwright. This is your PRIMARY source.` : "a. No confirmed APIs — skip to next strategy."}
+   ${endpointCount > 0 ? `b. Discovered endpoints — Call them through Playwright's browser context.` : "b. No endpoints discovered in HTML."}
+   c. Network interception — Use page.on('response') to capture ALL JSON API responses the frontend makes when loading.
+   ${inlineDataText ? "d. Inline JSON data — Extract from __NEXT_DATA__, ld+json, or window.__STATE__." : "d. No inline data."}
+   e. DOM extraction — Use Playwright to render the page and extract with real CSS selectors.
+   f. ⚡ HOMEPAGE FALLBACK — If ${websiteUrl} returns no data, navigate to the site homepage and repeat ALL strategies above.
+   g. NEVER give up — cycle through strategies until data is found.
 
 2. PAGE NAVIGATION & DETAIL EXTRACTION:
    - First load the listing/index page at ${websiteUrl}
-   - Extract all item links from the listing page (look at the REAL HTML above for link patterns)
+   - Intercept ALL network responses while the page loads (page.on('response'))
+   - Extract item links from the listing page
    - Navigate to EACH item's detail page to extract complete data
-   - Use the actual CSS selectors visible in the HTML above — NOT generic guesses like [class*='card']
-   - Look at the real class names, IDs, data attributes in the HTML snippet above
+   - Use the actual CSS selectors visible in the HTML above
 
 3. ROBUST ERROR HANDLING:
    - Wrap ALL selector operations in try/catch blocks
    - Implement a safeExtract() helper that tries multiple fallback selectors
-   - Add retry logic with exponential backoff for page loads
+   - Add retry logic with exponential backoff for page loads (at least 3 retries)
+   - Handle Cloudflare challenges by waiting and retrying
    - Handle missing elements gracefully (return empty string, not crash)
    - Log errors but continue scraping
+   - If a strategy returns 0 results, try the next strategy automatically
 
 4. COMPLETE DATA FIELDS — every schema field MUST be populated:
-   - For ID fields (e.g. comicId, chapterId): generate from URL hash if not found in DOM
+   - For ID fields: generate from URL hash if not found
    - For "provider"/"source" fields: set to the website hostname
    - For "url"/"link" fields: use the current page URL
-   - For date fields (createdAt, lastUpdated): extract from page or use current timestamp
-   - For array fields (genres, tags, images): use dedicated extraction with proper selectors
-   - For image arrays: collect ALL img[src] and [data-src] from the detail page
+   - For date fields: extract from page or use current timestamp
+   - For array fields: use dedicated extraction with proper selectors
+   - Deduplicate results by URL or ID before output
 
 5. PAGINATION:
-   - Find the real "next page" link using multiple selector patterns from the actual HTML
+   - Find the real "next page" link using multiple selector patterns
    - Respect CONFIG.maxPages limit
    - Add delay between page loads
 
 6. FILE OUTPUT:
-   - Save results to output-YYYY-MM-DD.json using ${isTs ? "fs.writeFileSync" : "json.dump to a file"}
+   - Save results as JSON envelope: { total_items, scraped_at, source_url, items: [...] }
+   - Save to output-YYYY-MM-DD.json using ${isTs ? "fs.writeFileSync" : "json.dump to a file"}
    - Also print to stdout as formatted JSON
 
 7. CODE QUALITY:
-   - ${isTs ? "Use strict TypeScript types — explicit type annotations on ALL function parameters and callbacks (e.g. Element[], string[], etc.)" : "Use Python type hints throughout"}
+   - ${isTs ? "Use strict TypeScript types — explicit type annotations on ALL function parameters and callbacks" : "Use Python type hints throughout"}
    - ${isTs ? "import * as fs from 'fs' for file output" : "import json, time, hashlib, datetime for utilities"}
    - Clean class-based structure with init(), scrape(), close()
    - No comments anywhere in the code
@@ -456,7 +614,7 @@ ${baseFile.split("\n").slice(0, TEMPLATE_PREVIEW_LINES).join("\n")}
 ... (template continues with safeExtract, extractImages, extractGenres, fillMissingFields, file output)
 \`\`\`
 
-Write the COMPLETE ${langLabel} file now. Use REAL selectors from the HTML above.`;
+Write the COMPLETE ${langLabel} file now. Use REAL selectors from the HTML above. The scraper must TRY EVERYTHING and NEVER give up.`;
 
     let apiFileContent = baseFile;
     const streamParts: string[] = [];

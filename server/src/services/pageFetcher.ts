@@ -1,5 +1,6 @@
 import https from "https";
 import http from "http";
+import { chromium, Browser } from "playwright-core";
 
 export interface FetchedPage {
   url: string;
@@ -14,6 +15,18 @@ export interface FetchedPage {
   linkUrls: string[];
   pageTitle: string;
   truncatedHtml: string;
+  probedEndpoints: ProbedEndpoint[];
+  isCloudflareBlocked: boolean;
+  alternativeUrls: string[];
+}
+
+export interface ProbedEndpoint {
+  url: string;
+  method: string;
+  statusCode: number;
+  contentType: string;
+  sampleData: string;
+  isJsonApi: boolean;
 }
 
 export interface DiscoveredEndpoint {
@@ -88,6 +101,88 @@ function doFetch(
       reject(new Error("Request timed out"));
     });
   });
+}
+
+interface PlaywrightFetchResult {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: string;
+  interceptedApis: ProbedEndpoint[];
+}
+
+async function doPlaywrightFetch(targetUrl: string): Promise<PlaywrightFetchResult> {
+  let browser: Browser | null = null;
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    });
+    const context = await browser.newContext({
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      viewport: { width: 1280, height: 900 },
+    });
+    const page = await context.newPage();
+
+    const interceptedApis: ProbedEndpoint[] = [];
+
+    page.on("response", async (response) => {
+      const url = response.url();
+      const ct = response.headers()["content-type"] ?? "";
+      const status = response.status();
+      if (
+        ct.includes("application/json") &&
+        !url.includes("analytics") &&
+        !url.includes("tracking") &&
+        !url.includes("telemetry") &&
+        status >= 200 &&
+        status < 400
+      ) {
+        try {
+          const text = await response.text();
+          interceptedApis.push({
+            url,
+            method: response.request().method(),
+            statusCode: status,
+            contentType: ct,
+            sampleData: text.slice(0, 3000),
+            isJsonApi: true,
+          });
+        } catch {}
+      }
+    });
+
+    const response = await page.goto(targetUrl, {
+      waitUntil: "networkidle",
+      timeout: 30_000,
+    });
+
+    await page.waitForTimeout(2000);
+
+    const body = await page.content();
+    const statusCode = response?.status() ?? 0;
+    const responseHeaders: Record<string, string> = {};
+    if (response) {
+      const allHeaders = response.headers();
+      for (const [k, v] of Object.entries(allHeaders)) {
+        if (typeof v === "string") responseHeaders[k] = v;
+      }
+    }
+
+    await browser.close();
+    browser = null;
+
+    return {
+      statusCode,
+      headers: responseHeaders,
+      body: body.slice(0, MAX_HTML_SIZE),
+      interceptedApis,
+    };
+  } finally {
+    if (browser) {
+      try { await browser.close(); } catch {}
+    }
+  }
 }
 
 function extractEndpointsFromHtml(html: string, baseUrl: string): DiscoveredEndpoint[] {
@@ -261,8 +356,162 @@ function extractLinkUrls(html: string, baseUrl: string): string[] {
   return links;
 }
 
+function detectCloudflareBlock(statusCode: number, headers: Record<string, string>, body: string): boolean {
+  if (headers["server"]?.toLowerCase().includes("cloudflare") && (statusCode === 403 || statusCode === 503)) {
+    return true;
+  }
+  const cfSignals = [
+    "cf-browser-verification",
+    "cf_chl_opt",
+    "challenge-platform",
+    "Just a moment...",
+    "Checking your browser",
+    "Attention Required! | Cloudflare",
+    "_cf_chl_tk",
+    "ray ID",
+  ];
+  const lowerBody = body.toLowerCase();
+  return cfSignals.some((sig) => lowerBody.includes(sig.toLowerCase()));
+}
+
+function discoverAlternativeUrls(targetUrl: string, linkUrls: string[]): string[] {
+  const parsed = new URL(targetUrl);
+  const alternatives: string[] = [];
+  const seen = new Set<string>([targetUrl]);
+
+  const homepageUrl = `${parsed.protocol}//${parsed.host}/`;
+  if (!seen.has(homepageUrl) && targetUrl !== homepageUrl) {
+    alternatives.push(homepageUrl);
+    seen.add(homepageUrl);
+  }
+
+  const commonPaths = [
+    "/sitemap.xml",
+    "/robots.txt",
+    "/api",
+    "/api/v1",
+    "/graphql",
+    "/wp-json/wp/v2/posts",
+    "/_next/data",
+  ];
+  for (const path of commonPaths) {
+    const url = `${parsed.protocol}//${parsed.host}${path}`;
+    if (!seen.has(url)) {
+      alternatives.push(url);
+      seen.add(url);
+    }
+  }
+
+  for (const link of linkUrls.slice(0, 10)) {
+    try {
+      const resolved = new URL(link, targetUrl).href;
+      if (!seen.has(resolved) && resolved.startsWith(parsed.protocol)) {
+        alternatives.push(resolved);
+        seen.add(resolved);
+      }
+    } catch {}
+  }
+
+  return alternatives;
+}
+
+async function probeApiEndpoints(
+  endpoints: DiscoveredEndpoint[],
+  baseUrl: string
+): Promise<ProbedEndpoint[]> {
+  const results: ProbedEndpoint[] = [];
+  const probeLimit = 8;
+  const timeout = 8_000;
+
+  const toProbe = endpoints.slice(0, probeLimit).map((ep) => {
+    try {
+      return { ...ep, resolvedUrl: new URL(ep.url, baseUrl).href };
+    } catch {
+      return null;
+    }
+  }).filter((ep): ep is DiscoveredEndpoint & { resolvedUrl: string } => ep !== null);
+
+  const commonApiPaths = ["/api", "/api/v1", "/graphql"];
+  const parsed = new URL(baseUrl);
+  for (const path of commonApiPaths) {
+    const url = `${parsed.protocol}//${parsed.host}${path}`;
+    const alreadyIncluded = toProbe.some((ep) => ep.resolvedUrl === url);
+    if (!alreadyIncluded && toProbe.length < probeLimit + 3) {
+      toProbe.push({ url: path, method: "GET", source: "common_probe", resolvedUrl: url });
+    }
+  }
+
+  const probeOne = async (ep: { resolvedUrl: string; method: string; source: string }): Promise<ProbedEndpoint | null> => {
+    try {
+      const fetchResult = await Promise.race([
+        doFetch(ep.resolvedUrl),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), timeout)),
+      ]);
+      const ct = fetchResult.headers["content-type"] ?? "";
+      const isJson = ct.includes("application/json") || ct.includes("text/json");
+      const sample = fetchResult.body.slice(0, 3000);
+      return {
+        url: ep.resolvedUrl,
+        method: ep.method,
+        statusCode: fetchResult.statusCode,
+        contentType: ct,
+        sampleData: sample,
+        isJsonApi: isJson && fetchResult.statusCode >= 200 && fetchResult.statusCode < 400,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const probePromises = toProbe.map(probeOne);
+  const settled = await Promise.allSettled(probePromises);
+  for (const result of settled) {
+    if (result.status === "fulfilled" && result.value) {
+      results.push(result.value);
+    }
+  }
+
+  return results;
+}
+
 export async function fetchAndAnalyzePage(targetUrl: string): Promise<FetchedPage> {
-  const { statusCode, headers, body } = await doFetch(targetUrl);
+  let statusCode: number;
+  let headers: Record<string, string>;
+  let body: string;
+  let playwrightInterceptedApis: ProbedEndpoint[] = [];
+  let usedPlaywright = false;
+
+  const httpResult = await doFetch(targetUrl).catch(() => null);
+
+  if (httpResult) {
+    statusCode = httpResult.statusCode;
+    headers = httpResult.headers;
+    body = httpResult.body;
+  } else {
+    statusCode = 0;
+    headers = {};
+    body = "";
+  }
+
+  const cfBlocked = httpResult ? detectCloudflareBlock(statusCode, headers, body) : true;
+  const tooLittleData = body.length < 500;
+
+  if (cfBlocked || tooLittleData) {
+    try {
+      const pwResult = await doPlaywrightFetch(targetUrl);
+      statusCode = pwResult.statusCode;
+      headers = pwResult.headers;
+      body = pwResult.body;
+      playwrightInterceptedApis = pwResult.interceptedApis;
+      usedPlaywright = true;
+    } catch {
+      if (!httpResult) {
+        throw new Error(`Failed to fetch ${targetUrl} via both HTTP and Playwright`);
+      }
+    }
+  }
+
+  const isCloudflareBlocked = !usedPlaywright && cfBlocked;
 
   const discoveredEndpoints = extractEndpointsFromHtml(body, targetUrl);
   const scriptSources = extractScriptSources(body);
@@ -273,6 +522,12 @@ export async function fetchAndAnalyzePage(targetUrl: string): Promise<FetchedPag
   const pageTitle = metaInfo.title ?? "";
 
   const truncatedHtml = body.slice(0, TRUNCATED_HTML_SIZE);
+
+  const probedEndpoints = [
+    ...playwrightInterceptedApis,
+    ...(await probeApiEndpoints(discoveredEndpoints, targetUrl)),
+  ];
+  const alternativeUrls = discoverAlternativeUrls(targetUrl, linkUrls);
 
   return {
     url: targetUrl,
@@ -287,6 +542,9 @@ export async function fetchAndAnalyzePage(targetUrl: string): Promise<FetchedPag
     linkUrls,
     pageTitle,
     truncatedHtml,
+    probedEndpoints,
+    isCloudflareBlocked,
+    alternativeUrls,
   };
 }
 
@@ -352,6 +610,33 @@ export function buildPageReport(page: FetchedPage): string {
     lines.push(`--- Sample Links (${page.linkUrls.length}) ---`);
     for (const link of page.linkUrls.slice(0, 40)) {
       lines.push(link);
+    }
+    lines.push("");
+  }
+
+  if (page.isCloudflareBlocked) {
+    lines.push(`--- ⚠️ CLOUDFLARE BLOCK DETECTED ---`);
+    lines.push(`The site is protected by Cloudflare. The scraper MUST use Playwright with a real browser to bypass this.`);
+    lines.push(`Plain HTTP requests (fetch/axios/requests) WILL NOT WORK. Use page.goto() with Playwright.`);
+    lines.push("");
+  }
+
+  if (page.probedEndpoints.length > 0) {
+    lines.push(`--- PROBED API ENDPOINTS (actual HTTP responses) ---`);
+    for (const ep of page.probedEndpoints) {
+      lines.push(`[${ep.method}] ${ep.url} → Status ${ep.statusCode} (${ep.contentType})`);
+      if (ep.isJsonApi) {
+        lines.push(`  ✅ LIVE JSON API — Sample response:`);
+        lines.push(`  ${ep.sampleData.slice(0, 1500)}`);
+      }
+    }
+    lines.push("");
+  }
+
+  if (page.alternativeUrls.length > 0) {
+    lines.push(`--- Alternative URLs to try ---`);
+    for (const url of page.alternativeUrls.slice(0, 15)) {
+      lines.push(url);
     }
     lines.push("");
   }
