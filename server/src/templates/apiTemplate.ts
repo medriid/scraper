@@ -541,6 +541,62 @@ export class ${className}Scraper {
     return this.interceptedData;
   }
 
+  private deduplicateResults(): void {
+    const seen = new Set<string>();
+    const unique: ScrapedItem[] = [];
+    for (const item of this.results) {
+      const entry = item as Record<string, unknown>;
+      const urlKey = Object.keys(entry).find((k: string) => {
+        const lk = k.toLowerCase();
+        return lk === "url" || lk === "link" || lk === "href";
+      });
+      const idKey = Object.keys(entry).find((k: string) => k.toLowerCase().includes("id"));
+      const key = (urlKey ? String(entry[urlKey]) : "") || (idKey ? String(entry[idKey]) : "") || JSON.stringify(item);
+      if (!seen.has(key)) {
+        seen.add(key);
+        unique.push(item);
+      }
+    }
+    this.results = unique;
+  }
+
+  private async tryHomepageFallback(): Promise<void> {
+    try {
+      const homeUrl = new URL("/", CONFIG.startUrl).href;
+      if (homeUrl !== CONFIG.startUrl) {
+        console.log(\`[Scraper] No data found — trying homepage: \${homeUrl}\`);
+        await this.goto(homeUrl);
+
+        const apiItems = await this.tryInterceptedData();
+        if (apiItems.length > 0) {
+          console.log(\`[Scraper] Homepage: extracted \${apiItems.length} item(s) from API data\`);
+          this.results.push(...apiItems);
+          return;
+        }
+
+        const items = await this.extractItems();
+        if (items.length > 0) {
+          console.log(\`[Scraper] Homepage: extracted \${items.length} item(s) from DOM\`);
+          this.results.push(...items.map((item: ScrapedItem) => this.fillMissingFields(item, homeUrl)));
+        }
+
+        const detailLinks = await this.getDetailLinks();
+        if (detailLinks.length > 0) {
+          console.log(\`[Scraper] Homepage: found \${detailLinks.length} detail link(s)\`);
+          for (const link of detailLinks.slice(0, 20)) {
+            const detailItem = await this.extractDetailPage(link);
+            if (detailItem) {
+              this.results.push(detailItem);
+            }
+            await sleep(CONFIG.requestDelay);
+          }
+        }
+      }
+    } catch (err) {
+      console.log(\`[Scraper] Homepage fallback failed: \${err}\`);
+    }
+  }
+
   async scrape(): Promise<ScrapedItem[]> {
     if (!this.page) throw new Error("Scraper not initialized. Call init() first.");
 
@@ -584,7 +640,12 @@ export class ${className}Scraper {
       }
     }
 
-    console.log(\`[Scraper] Done. Total records: \${this.results.length}\`);
+    if (this.results.length === 0) {
+      await this.tryHomepageFallback();
+    }
+
+    this.deduplicateResults();
+    console.log(\`[Scraper] Done. Total unique records: \${this.results.length}\`);
     return this.results;
   }
 
@@ -607,10 +668,16 @@ async function main(): Promise<void> {
 
     const timestamp = new Date().toISOString().slice(0, 10);
     const outputFile = \`output-\${timestamp}.json\`;
-    fs.writeFileSync(outputFile, JSON.stringify(data, null, 2));
+    const output = {
+      total_items: data.length,
+      scraped_at: new Date().toISOString(),
+      source_url: CONFIG.startUrl,
+      items: data,
+    };
+    fs.writeFileSync(outputFile, JSON.stringify(output, null, 2));
     console.log(\`[Scraper] Saved \${data.length} records to \${outputFile}\`);
 
-    console.log(JSON.stringify(data, null, 2));
+    console.log(JSON.stringify(output, null, 2));
   } finally {
     await scraper.close();
   }
@@ -981,6 +1048,55 @@ class ${className}Scraper:
             return null;
         }""")
 
+    def deduplicate_results(self):
+        seen = set()
+        unique = []
+        for item in self.results:
+            url_key = ""
+            id_key = ""
+            for k, v in item.items():
+                lk = k.lower()
+                if lk in ("url", "link", "href") and v:
+                    url_key = str(v)
+                if "id" in lk and v:
+                    id_key = str(v)
+            key = url_key or id_key or json.dumps(item, sort_keys=True, default=str)
+            if key not in seen:
+                seen.add(key)
+                unique.append(item)
+        self.results = unique
+
+    def try_homepage_fallback(self):
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(CONFIG["start_url"])
+            home_url = f"{parsed.scheme}://{parsed.netloc}/"
+            if home_url != CONFIG["start_url"]:
+                print(f"[Scraper] No data found — trying homepage: {home_url}")
+                self.goto(home_url)
+
+                api_items = self.try_intercepted_data()
+                if api_items:
+                    print(f"[Scraper] Homepage: extracted {len(api_items)} item(s) from API data")
+                    self.results.extend(api_items)
+                    return
+
+                items = self.extract_items()
+                if items:
+                    print(f"[Scraper] Homepage: extracted {len(items)} item(s) from DOM")
+                    self.results.extend([self.fill_missing_fields(item, home_url) for item in items])
+
+                detail_links = self.get_detail_links()
+                if detail_links:
+                    print(f"[Scraper] Homepage: found {len(detail_links)} detail link(s)")
+                    for link in detail_links[:20]:
+                        detail_item = self.extract_detail_page(link)
+                        if detail_item:
+                            self.results.append(detail_item)
+                        time.sleep(CONFIG["request_delay"])
+        except Exception as e:
+            print(f"[Scraper] Homepage fallback failed: {e}")
+
     def scrape(self) -> list[dict]:
         if not self.page:
             raise RuntimeError("Scraper not initialized. Call init() first.")
@@ -1017,7 +1133,11 @@ class ${className}Scraper:
             if current_url and page_num < CONFIG["max_pages"]:
                 time.sleep(CONFIG["request_delay"])
 
-        print(f"[Scraper] Done. Total records: {len(self.results)}")
+        if not self.results:
+            self.try_homepage_fallback()
+
+        self.deduplicate_results()
+        print(f"[Scraper] Done. Total unique records: {len(self.results)}")
         return self.results
 
     def close(self):
@@ -1035,11 +1155,17 @@ def main():
 
         timestamp = datetime.utcnow().strftime("%Y-%m-%d")
         output_file = f"output-{timestamp}.json"
+        output = {
+            "total_items": len(data),
+            "scraped_at": datetime.utcnow().isoformat() + "Z",
+            "source_url": CONFIG["start_url"],
+            "items": data,
+        }
         with open(output_file, "w") as f:
-            json.dump(data, f, indent=2, default=str)
+            json.dump(output, f, indent=2, default=str)
         print(f"[Scraper] Saved {len(data)} records to {output_file}")
 
-        print(json.dumps(data, indent=2, default=str))
+        print(json.dumps(output, indent=2, default=str))
     finally:
         scraper.close()
 
