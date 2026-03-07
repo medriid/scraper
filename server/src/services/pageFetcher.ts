@@ -252,7 +252,7 @@ function extractLinkUrls(html: string, baseUrl: string): string[] {
   let count = 0;
   while ((match = linkPattern.exec(html)) !== null && count < 100) {
     const href = match[1];
-    if (!seen.has(href) && !href.startsWith("javascript:") && !href.startsWith("mailto:")) {
+    if (!seen.has(href) && !href.startsWith("javascript:") && !href.startsWith("mailto:") && !href.startsWith("data:") && !href.startsWith("vbscript:")) {
       seen.add(href);
       links.push(href);
       count++;
