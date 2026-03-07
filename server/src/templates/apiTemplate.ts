@@ -170,6 +170,7 @@ export class ${className}Scraper {
   private page: Page | null = null;
   private results: ScrapedItem[] = [];
   private interceptedData: Record<string, unknown>[] = [];
+  private visitedUrls = new Set<string>();
 
   async init(): Promise<void> {
     this.browser = await chromium.launch({
@@ -563,27 +564,30 @@ export class ${className}Scraper {
   private async tryHomepageFallback(): Promise<void> {
     try {
       const homeUrl = new URL("/", CONFIG.startUrl).href;
-      if (homeUrl !== CONFIG.startUrl) {
-        console.log(\`[Scraper] No data found — trying homepage: \${homeUrl}\`);
+      if (homeUrl !== CONFIG.startUrl && !this.visitedUrls.has(homeUrl)) {
+        console.log(\`[Crawler] No data found — crawling homepage: \${homeUrl}\`);
+        this.visitedUrls.add(homeUrl);
         await this.goto(homeUrl);
 
         const apiItems = await this.tryInterceptedData();
         if (apiItems.length > 0) {
-          console.log(\`[Scraper] Homepage: extracted \${apiItems.length} item(s) from API data\`);
+          console.log(\`[Crawler] Homepage: extracted \${apiItems.length} item(s) from API data\`);
           this.results.push(...apiItems);
           return;
         }
 
         const items = await this.extractItems();
         if (items.length > 0) {
-          console.log(\`[Scraper] Homepage: extracted \${items.length} item(s) from DOM\`);
+          console.log(\`[Crawler] Homepage: extracted \${items.length} item(s) from DOM\`);
           this.results.push(...items.map((item: ScrapedItem) => this.fillMissingFields(item, homeUrl)));
         }
 
         const detailLinks = await this.getDetailLinks();
         if (detailLinks.length > 0) {
-          console.log(\`[Scraper] Homepage: found \${detailLinks.length} detail link(s)\`);
-          for (const link of detailLinks.slice(0, 20)) {
+          console.log(\`[Crawler] Homepage: found \${detailLinks.length} detail link(s), crawling...\`);
+          for (const link of detailLinks.slice(0, 30)) {
+            if (this.visitedUrls.has(link)) continue;
+            this.visitedUrls.add(link);
             const detailItem = await this.extractDetailPage(link);
             if (detailItem) {
               this.results.push(detailItem);
@@ -593,42 +597,77 @@ export class ${className}Scraper {
         }
       }
     } catch (err) {
-      console.log(\`[Scraper] Homepage fallback failed: \${err}\`);
+      console.log(\`[Crawler] Homepage fallback failed: \${err}\`);
+    }
+  }
+
+  private async trySitemapFallback(): Promise<void> {
+    try {
+      const sitemapUrl = new URL("/sitemap.xml", CONFIG.startUrl).href;
+      console.log(\`[Crawler] Trying sitemap: \${sitemapUrl}\`);
+      await this.goto(sitemapUrl);
+      const urls = await this.page!.evaluate(() => {
+        const locs = Array.from(document.querySelectorAll("loc"));
+        return locs.map((el: Element) => el.textContent?.trim() ?? "").filter(Boolean);
+      });
+      if (urls.length > 0) {
+        console.log(\`[Crawler] Sitemap: found \${urls.length} URL(s)\`);
+        for (const url of urls.slice(0, 50)) {
+          if (this.visitedUrls.has(url)) continue;
+          this.visitedUrls.add(url);
+          const detailItem = await this.extractDetailPage(url);
+          if (detailItem) {
+            this.results.push(detailItem);
+          }
+          await sleep(CONFIG.requestDelay);
+        }
+      }
+    } catch (err) {
+      console.log(\`[Crawler] Sitemap fallback failed: \${err}\`);
     }
   }
 
   async scrape(): Promise<ScrapedItem[]> {
-    if (!this.page) throw new Error("Scraper not initialized. Call init() first.");
+    if (!this.page) throw new Error("Crawler not initialized. Call init() first.");
 
     let currentUrl: string | null = CONFIG.startUrl;
     let pageNum = 0;
 
     while (currentUrl && pageNum < CONFIG.maxPages) {
       pageNum++;
-      console.log(\`[Scraper] Page \${pageNum}: \${currentUrl}\`);
+      if (this.visitedUrls.has(currentUrl)) {
+        currentUrl = await this.getNextPageUrl();
+        continue;
+      }
+      this.visitedUrls.add(currentUrl);
+      console.log(\`[Crawler] Page \${pageNum}: \${currentUrl}\`);
 
       await this.goto(currentUrl);
 
       const apiItems = await this.tryInterceptedData();
       if (apiItems.length > 0) {
-        console.log(\`[Scraper] Extracted \${apiItems.length} item(s) from intercepted API data\`);
+        console.log(\`[Crawler] Extracted \${apiItems.length} item(s) from intercepted API data\`);
         this.results.push(...apiItems);
       } else {
         const listingItems = await this.extractItems();
         if (listingItems.length > 0) {
-          console.log(\`[Scraper] Extracted \${listingItems.length} item(s) from listing page\`);
+          console.log(\`[Crawler] Extracted \${listingItems.length} item(s) from listing page\`);
           this.results.push(...listingItems.map((item: ScrapedItem) => this.fillMissingFields(item, currentUrl!)));
         }
 
         const detailLinks = await this.getDetailLinks();
-        if (detailLinks.length > 0 && listingItems.length <= detailLinks.length) {
-          console.log(\`[Scraper] Found \${detailLinks.length} detail link(s), extracting...\`);
-          for (const link of detailLinks.slice(0, 20)) {
-            const detailItem = await this.extractDetailPage(link);
-            if (detailItem) {
-              this.results.push(detailItem);
+        if (detailLinks.length > 0) {
+          const unvisitedLinks = detailLinks.filter((link: string) => !this.visitedUrls.has(link));
+          if (unvisitedLinks.length > 0) {
+            console.log(\`[Crawler] Found \${unvisitedLinks.length} unvisited detail link(s), crawling...\`);
+            for (const link of unvisitedLinks.slice(0, 30)) {
+              this.visitedUrls.add(link);
+              const detailItem = await this.extractDetailPage(link);
+              if (detailItem) {
+                this.results.push(detailItem);
+              }
+              await sleep(CONFIG.requestDelay);
             }
-            await sleep(CONFIG.requestDelay);
           }
         }
       }
@@ -644,8 +683,12 @@ export class ${className}Scraper {
       await this.tryHomepageFallback();
     }
 
+    if (this.results.length === 0) {
+      await this.trySitemapFallback();
+    }
+
     this.deduplicateResults();
-    console.log(\`[Scraper] Done. Total unique records: \${this.results.length}\`);
+    console.log(\`[Crawler] Done. Total unique records: \${this.results.length}\`);
     return this.results;
   }
 
@@ -738,6 +781,7 @@ class ${className}Scraper:
         self.page: Page | None = None
         self.results: list[dict] = []
         self.intercepted_data: list[dict] = []
+        self.visited_urls: set[str] = set()
 
     def init(self):
         pw = sync_playwright().start()
@@ -1071,63 +1115,97 @@ class ${className}Scraper:
             from urllib.parse import urlparse
             parsed = urlparse(CONFIG["start_url"])
             home_url = f"{parsed.scheme}://{parsed.netloc}/"
-            if home_url != CONFIG["start_url"]:
-                print(f"[Scraper] No data found — trying homepage: {home_url}")
+            if home_url != CONFIG["start_url"] and home_url not in self.visited_urls:
+                print(f"[Crawler] No data found — crawling homepage: {home_url}")
+                self.visited_urls.add(home_url)
                 self.goto(home_url)
 
                 api_items = self.try_intercepted_data()
                 if api_items:
-                    print(f"[Scraper] Homepage: extracted {len(api_items)} item(s) from API data")
+                    print(f"[Crawler] Homepage: extracted {len(api_items)} item(s) from API data")
                     self.results.extend(api_items)
                     return
 
                 items = self.extract_items()
                 if items:
-                    print(f"[Scraper] Homepage: extracted {len(items)} item(s) from DOM")
+                    print(f"[Crawler] Homepage: extracted {len(items)} item(s) from DOM")
                     self.results.extend([self.fill_missing_fields(item, home_url) for item in items])
 
                 detail_links = self.get_detail_links()
                 if detail_links:
-                    print(f"[Scraper] Homepage: found {len(detail_links)} detail link(s)")
-                    for link in detail_links[:20]:
+                    unvisited = [l for l in detail_links if l not in self.visited_urls]
+                    print(f"[Crawler] Homepage: found {len(unvisited)} unvisited detail link(s), crawling...")
+                    for link in unvisited[:30]:
+                        self.visited_urls.add(link)
                         detail_item = self.extract_detail_page(link)
                         if detail_item:
                             self.results.append(detail_item)
                         time.sleep(CONFIG["request_delay"])
         except Exception as e:
-            print(f"[Scraper] Homepage fallback failed: {e}")
+            print(f"[Crawler] Homepage fallback failed: {e}")
+
+    def try_sitemap_fallback(self):
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(CONFIG["start_url"])
+            sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
+            print(f"[Crawler] Trying sitemap: {sitemap_url}")
+            self.goto(sitemap_url)
+            urls = self.page.evaluate("""() => {
+                const locs = Array.from(document.querySelectorAll("loc"));
+                return locs.map(el => el.textContent?.trim() || "").filter(Boolean);
+            }""")
+            if urls:
+                print(f"[Crawler] Sitemap: found {len(urls)} URL(s)")
+                for url in urls[:50]:
+                    if url in self.visited_urls:
+                        continue
+                    self.visited_urls.add(url)
+                    detail_item = self.extract_detail_page(url)
+                    if detail_item:
+                        self.results.append(detail_item)
+                    time.sleep(CONFIG["request_delay"])
+        except Exception as e:
+            print(f"[Crawler] Sitemap fallback failed: {e}")
 
     def scrape(self) -> list[dict]:
         if not self.page:
-            raise RuntimeError("Scraper not initialized. Call init() first.")
+            raise RuntimeError("Crawler not initialized. Call init() first.")
 
         current_url = CONFIG["start_url"]
         page_num = 0
 
         while current_url and page_num < CONFIG["max_pages"]:
             page_num += 1
-            print(f"[Scraper] Page {page_num}: {current_url}")
+            if current_url in self.visited_urls:
+                current_url = self.get_next_page_url()
+                continue
+            self.visited_urls.add(current_url)
+            print(f"[Crawler] Page {page_num}: {current_url}")
 
             self.goto(current_url)
 
             api_items = self.try_intercepted_data()
             if api_items:
-                print(f"[Scraper] Extracted {len(api_items)} item(s) from intercepted API data")
+                print(f"[Crawler] Extracted {len(api_items)} item(s) from intercepted API data")
                 self.results.extend(api_items)
             else:
                 listing_items = self.extract_items()
                 if listing_items:
-                    print(f"[Scraper] Extracted {len(listing_items)} item(s) from listing page")
+                    print(f"[Crawler] Extracted {len(listing_items)} item(s) from listing page")
                     self.results.extend([self.fill_missing_fields(item, current_url) for item in listing_items])
 
                 detail_links = self.get_detail_links()
-                if detail_links and len(listing_items) <= len(detail_links):
-                    print(f"[Scraper] Found {len(detail_links)} detail link(s), extracting...")
-                    for link in detail_links[:20]:
-                        detail_item = self.extract_detail_page(link)
-                        if detail_item:
-                            self.results.append(detail_item)
-                        time.sleep(CONFIG["request_delay"])
+                if detail_links:
+                    unvisited = [l for l in detail_links if l not in self.visited_urls]
+                    if unvisited:
+                        print(f"[Crawler] Found {len(unvisited)} unvisited detail link(s), crawling...")
+                        for link in unvisited[:30]:
+                            self.visited_urls.add(link)
+                            detail_item = self.extract_detail_page(link)
+                            if detail_item:
+                                self.results.append(detail_item)
+                            time.sleep(CONFIG["request_delay"])
 
             current_url = self.get_next_page_url()
             if current_url and page_num < CONFIG["max_pages"]:
@@ -1136,8 +1214,11 @@ class ${className}Scraper:
         if not self.results:
             self.try_homepage_fallback()
 
+        if not self.results:
+            self.try_sitemap_fallback()
+
         self.deduplicate_results()
-        print(f"[Scraper] Done. Total unique records: {len(self.results)}")
+        print(f"[Crawler] Done. Total unique records: {len(self.results)}")
         return self.results
 
     def close(self):

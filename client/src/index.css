@@ -27,6 +27,7 @@
   --step-fetching: #7ec8e3;
   --step-analyzing: #b8b8b8;
   --step-discovering: #a3d9a5;
+  --step-crawling: #56b6c2;
   --step-refining: #d0d0d0;
   --step-testing: #e6c07b;
   --step-validating: #98c379;
@@ -591,6 +592,7 @@ code, pre { font-family: var(--font-mono); }
 .step-icon--fetching { color: var(--step-fetching); }
 .step-icon--analyzing { color: var(--step-analyzing); }
 .step-icon--discovering { color: var(--step-discovering); }
+.step-icon--crawling { color: var(--step-crawling); }
 .step-icon--refining { color: var(--step-refining); }
 .step-icon--testing { color: var(--step-testing); }
 .step-icon--validating { color: var(--step-validating); }
@@ -2410,6 +2412,7 @@ code, pre { font-family: var(--font-mono); }
 .step-dot--fetching { color: var(--step-fetching); border-color: rgba(126,200,227,0.3); }
 .step-dot--analyzing { color: var(--step-analyzing); border-color: rgba(184,184,184,0.3); }
 .step-dot--discovering { color: var(--step-discovering); border-color: rgba(163,217,165,0.3); }
+.step-dot--crawling { color: var(--step-crawling); border-color: rgba(86,182,194,0.3); }
 .step-dot--refining { color: var(--step-refining); border-color: rgba(208,208,208,0.3); }
 .step-dot--testing { color: var(--step-testing); border-color: rgba(230,192,123,0.3); }
 .step-dot--validating { color: var(--step-validating); border-color: rgba(152,195,121,0.3); }
