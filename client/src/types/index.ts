@@ -1,7 +1,7 @@
 export interface ModelOption {
   id: string;
   name: string;
-  provider: "gemini" | "openrouter" | "groq";
+  provider: "gemini" | "openrouter" | "groq" | "exe";
   free: boolean;
   contextWindow: string;
   description: string;
@@ -15,6 +15,7 @@ export interface AgentStep {
     | "fetching"
     | "analyzing"
     | "discovering"
+    | "distilling"
     | "crawling"
     | "generating"
     | "refining"

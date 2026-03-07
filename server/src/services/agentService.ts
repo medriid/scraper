@@ -1,8 +1,10 @@
 import { Response } from "express";
-import { chatCompletion, streamCompletion } from "./aiService.js";
+import { crawl } from "./Crawler.js";
+import { runArchitect, runExtractor, streamCoder } from "./LlmProvider.js";
+import { chunkText, estimateTokens } from "./Distiller.js";
 import { generateApiFileTemplate, generatePyFileTemplate, generateDataApiTemplate, generateDataApiPyTemplate } from "../templates/apiTemplate.js";
 import { updateSession } from "./supabaseService.js";
-import { fetchAndAnalyzePage, buildPageReport, FetchedPage, crawlSiteForDiscovery, CrawledPageReport } from "./pageFetcher.js";
+import { randomUUID } from "crypto";
 
 export interface AgentStep {
   type:
@@ -12,6 +14,7 @@ export interface AgentStep {
     | "analyzing"
     | "discovering"
     | "crawling"
+    | "distilling"
     | "generating"
     | "refining"
     | "testing"
@@ -31,21 +34,77 @@ export interface AuthCredentials {
   cookies?: string;
 }
 
-interface AgentKnowledge {
-  fetchedPages: FetchedPage[];
-  crawledPages: CrawledPageReport[];
-  interceptedApis: Array<{ url: string; sampleData: string; method: string }>;
-  discoveredDetailUrls: string[];
-  crawlReports: string[];
-  visitedUrls: Set<string>;
-  analysis: string;
-  schema: Record<string, unknown> | null;
+// ─── In-memory Job Queue ──────────────────────────────────────────────────────
+
+export type JobStatus = "queued" | "discovering" | "distilling" | "extracting" | "building" | "completed" | "failed";
+
+export interface CrawlJob {
+  jobId: string;
+  status: JobStatus;
+  progress: number;          // 0-100
+  steps: AgentStep[];
+  codeChunks: string[];
+  result: {
+    schema?: Record<string, unknown>;
+    refinedPrompt?: string;
+    analysis?: string;
+    apiFile?: string;
+  } | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+  websiteUrl: string;
+  instructions: string;
+  modelId: string;
+  language: string;
+  extractionMode: string;
+  credentials?: AuthCredentials;
+  sessionId: string | null;
 }
+
+const jobQueue = new Map<string, CrawlJob>();
+const JOB_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+// Cleanup old jobs every 30 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, job] of jobQueue.entries()) {
+    if (now - job.createdAt > JOB_TTL_MS) {
+      jobQueue.delete(id);
+    }
+  }
+}, 30 * 60 * 1000);
+
+export function createJob(params: Omit<CrawlJob, "jobId" | "status" | "progress" | "steps" | "codeChunks" | "result" | "error" | "createdAt" | "updatedAt">): CrawlJob {
+  const jobId = randomUUID();
+  const job: CrawlJob = {
+    jobId,
+    status: "queued",
+    progress: 0,
+    steps: [],
+    codeChunks: [],
+    result: null,
+    error: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...params,
+  };
+  jobQueue.set(jobId, job);
+  return job;
+}
+
+export function getJob(jobId: string): CrawlJob | undefined {
+  return jobQueue.get(jobId);
+}
+
+// ─── SSE helpers ─────────────────────────────────────────────────────────────
 
 function sendSSE(res: Response, event: string, data: unknown): void {
   const payload = typeof data === "string" ? data : JSON.stringify(data);
   res.write(`event: ${event}\ndata: ${payload}\n\n`);
 }
+
+// ─── JSON extraction ──────────────────────────────────────────────────────────
 
 const JSON_OBJECT_RE = /\{[\s\S]*\}/;
 const FALLBACK_SCHEMA: Record<string, unknown> = { title: "", url: "", description: "", image: "", tags: [] };
@@ -59,139 +118,11 @@ function extractJson(raw: string): Record<string, unknown> | null {
   }
 }
 
-function buildKnowledgeSummary(k: AgentKnowledge): string {
-  const lines: string[] = [];
-
-  lines.push(`=== CRAWLED PAGES (${k.crawledPages.length}) ===`);
-  for (const p of k.crawledPages) {
-    lines.push(`\nPage: ${p.url}`);
-    lines.push(`Title: ${p.title}`);
-    if (Object.keys(p.sampleTexts).length > 0) {
-      lines.push(`Sample data:`);
-      for (const [field, text] of Object.entries(p.sampleTexts)) {
-        lines.push(`  ${field}: "${text}"`);
-      }
-    }
-    const meaningful = p.elements.filter(
-      (e) => e.count > 0 && (e.sampleText || e.sampleHref || e.sampleSrc)
-    );
-    if (meaningful.length > 0) {
-      lines.push(`Discovered DOM elements:`);
-      for (const e of meaningful.slice(0, 25)) {
-        let line = `  "${e.selector}" → ${e.count}×, <${e.tagName}>`;
-        if (e.className) line += ` class="${e.className.slice(0, 50)}"`;
-        if (e.sampleText) line += `, text: "${e.sampleText.slice(0, 80)}"`;
-        if (e.sampleHref) line += `, href: "${e.sampleHref}"`;
-        if (e.sampleSrc) line += `, src: "${e.sampleSrc}"`;
-        lines.push(line);
-      }
-    }
-    if (p.linkPatterns.length > 0) {
-      lines.push(`Content links (${p.linkPatterns.length}):`);
-      for (const link of p.linkPatterns.slice(0, 5)) {
-        lines.push(`  ${link}`);
-      }
-    }
-  }
-
-  if (k.interceptedApis.length > 0) {
-    lines.push(`\n=== INTERCEPTED APIs (${k.interceptedApis.length}) ===`);
-    for (const api of k.interceptedApis.slice(0, 5)) {
-      lines.push(`[${api.method}] ${api.url}`);
-      lines.push(`  Sample: ${api.sampleData.slice(0, 500)}`);
-    }
-  }
-
-  if (k.discoveredDetailUrls.length > 0) {
-    lines.push(`\n=== DISCOVERED URLs (${k.discoveredDetailUrls.length}) ===`);
-    for (const url of k.discoveredDetailUrls.slice(0, 10)) {
-      lines.push(`  ${url}`);
-    }
-  }
-
-  for (const fp of k.fetchedPages) {
-    if (fp.inlineJsonData.length > 0) {
-      lines.push(`\n=== INLINE DATA from ${fp.url} ===`);
-      for (const d of fp.inlineJsonData.slice(0, 3)) {
-        lines.push(d.slice(0, 1500));
-      }
-    }
-    const liveApis = fp.probedEndpoints.filter((ep) => ep.isJsonApi);
-    if (liveApis.length > 0) {
-      lines.push(`\n=== LIVE JSON APIs from ${fp.url} ===`);
-      for (const ep of liveApis.slice(0, 3)) {
-        lines.push(`[${ep.method}] ${ep.url} → ${ep.statusCode}`);
-        lines.push(`  Sample: ${ep.sampleData.slice(0, 800)}`);
-      }
-    }
-  }
-
-  if (k.schema) {
-    lines.push(`\n=== CURRENT SCHEMA ===`);
-    lines.push(JSON.stringify(k.schema, null, 2));
-  }
-
-  return lines.join("\n");
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-function buildElementsReport(crawledPages: CrawledPageReport[]): string {
-  return crawledPages
-    .map((p) => {
-      const elLines = p.elements
-        .filter((e) => e.count > 0 && (e.sampleText || e.sampleHref || e.sampleSrc))
-        .slice(0, 25)
-        .map((e) => {
-          let line = `  "${e.selector}" → ${e.count}×, <${e.tagName}>`;
-          if (e.className) line += ` class="${e.className.slice(0, 50)}"`;
-          if (e.sampleText) line += `, text: "${e.sampleText.slice(0, 80)}"`;
-          if (e.sampleHref) line += `, href: "${e.sampleHref}"`;
-          if (e.sampleSrc) line += `, src: "${e.sampleSrc}"`;
-          return line;
-        })
-        .join("\n");
-      return elLines ? `Page ${p.url}:\n${elLines}` : "";
-    })
-    .filter(Boolean)
-    .join("\n\n");
-}
-
-function buildCrawlSampleData(crawledPages: CrawledPageReport[]): string {
-  return crawledPages
-    .map((p) => {
-      const texts = Object.entries(p.sampleTexts)
-        .map(([k, v]) => `${k}: "${v}"`)
-        .join(", ");
-      return texts ? `Page ${p.url}: ${texts}` : "";
-    })
-    .filter(Boolean)
-    .join("\n");
-}
-
-function mergeDiscovery(
-  knowledge: AgentKnowledge,
-  result: {
-    pages: CrawledPageReport[];
-    allInterceptedApis: Array<{ url: string; sampleData: string; method: string; statusCode: number; contentType: string; isJsonApi: boolean }>;
-    discoveredDetailUrls: string[];
-    siteStructure: string;
-  }
-): void {
-  knowledge.crawledPages.push(...result.pages);
-  knowledge.crawlReports.push(result.siteStructure);
-  for (const u of result.discoveredDetailUrls) {
-    if (!knowledge.discoveredDetailUrls.includes(u)) {
-      knowledge.discoveredDetailUrls.push(u);
-    }
-  }
-  for (const api of result.allInterceptedApis) {
-    if (!knowledge.interceptedApis.some((a) => a.url === api.url)) {
-      knowledge.interceptedApis.push({ url: api.url, sampleData: api.sampleData, method: api.method });
-    }
-  }
-  for (const p of result.pages) {
-    knowledge.visitedUrls.add(p.url);
-  }
-}
+// ─── Main Agent Session (SSE streaming) ──────────────────────────────────────
 
 export async function runAgentSession(
   sessionId: string | null,
@@ -203,468 +134,175 @@ export async function runAgentSession(
   credentials: AuthCredentials | undefined,
   res: Response
 ): Promise<void> {
-  const steps: AgentStep[] = [];
   const isTs = language !== "python";
   const langLabel = isTs ? "TypeScript" : "Python";
   const ext = isTs ? "ts" : "py";
   const isDataApi = extractionMode === "data_api";
 
   const emit = (step: AgentStep) => {
-    steps.push(step);
     sendSSE(res, "step", step);
   };
 
-  const knowledge: AgentKnowledge = {
-    fetchedPages: [],
-    crawledPages: [],
-    interceptedApis: [],
-    discoveredDetailUrls: [],
-    crawlReports: [],
-    visitedUrls: new Set<string>(),
-    analysis: "",
-    schema: null,
-  };
-
-  const MAX_ITERATIONS = 6;
+  // State accumulated during crawl
+  let combinedMarkdown = "";
+  let discoveredApis: Array<{ url: string; method: string; sampleData: string }> = [];
+  let schema: Record<string, unknown> | null = null;
+  let analysis = "";
+  let crawlSummary = { pages: 0, tokens: 0, apis: 0 };
 
   try {
-    // ── Step 1: Initial page fetch ──────────────────────────────────────────
-    emit({
-      type: "fetching",
-      message: "Fetching target website",
-      detail: `Making real HTTP request to ${websiteUrl}…`,
-    });
+    // ── Phase 1: Crawl & Discover ───────────────────────────────────────────
+    emit({ type: "discovering", message: "Launching Discovery Engine", detail: `Navigating ${websiteUrl}…` });
 
-    const tryFetchPage = async (url: string): Promise<FetchedPage | null> => {
-      try { return await fetchAndAnalyzePage(url); } catch { return null; }
-    };
-
-    let page = await tryFetchPage(websiteUrl);
-    let isCloudflareBlocked = false;
-
-    if (page && page.isCloudflareBlocked) {
-      isCloudflareBlocked = true;
-      emit({
-        type: "browsing",
-        message: "Cloudflare protection detected",
-        detail: "Will use Playwright to bypass. Trying alternative URLs…",
-      });
-      for (const altUrl of page.alternativeUrls.slice(0, 4)) {
-        const altPage = await tryFetchPage(altUrl);
-        if (altPage && !altPage.isCloudflareBlocked && altPage.html.length > 1000) {
-          page.discoveredEndpoints.push(...altPage.discoveredEndpoints);
-          page.probedEndpoints.push(...altPage.probedEndpoints);
-          page.inlineJsonData.push(...altPage.inlineJsonData);
-          page.linkUrls.push(...altPage.linkUrls);
-          if (altPage.html.length > page.html.length) {
-            page.html = altPage.html;
-            page.truncatedHtml = altPage.truncatedHtml;
-          }
-          break;
+    const crawlResult = await crawl(
+      websiteUrl,
+      (progress) => {
+        if (progress.phase === "discovering") {
+          emit({ type: "discovering", message: progress.message, detail: progress.detail });
+        } else if (progress.phase === "distilling") {
+          emit({ type: "distilling", message: progress.message, detail: progress.detail });
+        } else if (progress.phase === "error") {
+          emit({ type: "browsing", message: progress.message, detail: progress.detail });
         }
-      }
-    }
+      },
+      { maxPages: 6, maxDepth: 2, autoExplore: true }
+    );
 
-    if (page) {
-      knowledge.fetchedPages.push(page);
-      knowledge.visitedUrls.add(websiteUrl);
-      const liveApiCount = page.probedEndpoints.filter((ep) => ep.isJsonApi).length;
-      emit({
-        type: "browsing",
-        message: "Page fetched successfully",
-        detail: `Status ${page.statusCode} · ${page.discoveredEndpoints.length} endpoint(s) · ${liveApiCount} live API(s)${isCloudflareBlocked ? " · ⚠️ Cloudflare" : ""}`,
-      });
-    } else {
-      isCloudflareBlocked = true;
-      emit({
-        type: "browsing",
-        message: "Direct fetch failed — will use Playwright",
-        detail: "Site requires browser rendering.",
-      });
-    }
+    crawlSummary = {
+      pages: crawlResult.pages.length,
+      tokens: crawlResult.totalTokens,
+      apis: crawlResult.siteMap.apiEndpoints.length,
+    };
+    combinedMarkdown = crawlResult.combinedMarkdown;
+    discoveredApis = crawlResult.siteMap.apiEndpoints;
 
-    await sleep(300);
-
-    // ── Step 2: Initial bot crawl ───────────────────────────────────────────
     emit({
       type: "crawling",
-      message: "Bot crawling site with Playwright",
-      detail: "Launching headless browser to dynamically discover page structure and data…",
+      message: `Discovery complete`,
+      detail: `${crawlSummary.pages} page(s) · ${crawlSummary.tokens.toLocaleString()} tokens · ${crawlSummary.apis} API(s)`,
     });
 
-    try {
-      const crawlResult = await crawlSiteForDiscovery(websiteUrl, page ? page.linkUrls : [], 3);
-      mergeDiscovery(knowledge, crawlResult);
-      emit({
-        type: "crawling",
-        message: `Bot crawled ${crawlResult.pages.length} page(s)`,
-        detail: `${crawlResult.discoveredDetailUrls.length} content link(s) · ${crawlResult.allInterceptedApis.length} API(s) intercepted`,
-      });
-    } catch (err) {
-      emit({
-        type: "crawling",
-        message: "Bot crawl encountered issues",
-        detail: `Error: ${err instanceof Error ? err.message : "Unknown"}`,
-      });
+    await sleep(200);
+
+    // ── Phase 2: AI Architecture Analysis ──────────────────────────────────
+    emit({ type: "analyzing", message: "Site Architect analyzing structure", detail: "Building extraction strategy…" });
+
+    const apiSummary = discoveredApis.length > 0
+      ? `\n\n## Intercepted JSON APIs (${discoveredApis.length}):\n` +
+        discoveredApis.slice(0, 5).map((a) => `- [${a.method}] ${a.url}\n  ${a.sampleData.slice(0, 300)}`).join("\n")
+      : "";
+
+    // If markdown is huge, chunk it and analyse key sections
+    const markdownTokens = estimateTokens(combinedMarkdown);
+    let analysisContext = combinedMarkdown;
+    if (markdownTokens > 12000) {
+      const chunks = chunkText(combinedMarkdown, 10000);
+      analysisContext = chunks.slice(0, 2).join("\n\n---\n\n");
+      emit({ type: "distilling", message: "Token compression applied", detail: `${markdownTokens.toLocaleString()} tokens → chunked for parallel processing` });
     }
 
-    await sleep(300);
+    const analysisPrompt = `You are an expert web scraping architect. Analyze the following site content and XHR APIs to determine the best data extraction strategy.
 
-    // ── Step 3: Initial AI analysis ─────────────────────────────────────────
-    emit({
-      type: "thinking",
-      message: "AI analyzing crawl findings",
-      detail: "Examining discovered DOM elements, intercepted APIs, and page structure…",
-    });
+Target URL: ${websiteUrl}
+User Request: ${instructions}
+Mode: ${isDataApi ? "Authenticated Data API" : "Public Scraper"}
+${isDataApi && credentials ? `Credentials available: ${Object.keys(credentials).filter((k) => credentials[k as keyof AuthCredentials]).join(", ")}` : ""}
 
-    const pageReport = page ? buildPageReport(page) : "No page data — all fetches failed.";
+## Site Content (Semantic Markdown)
+${analysisContext.slice(0, 10000)}
+${apiSummary}
 
-    const analysisPrompt = `You are an expert web scraping engineer. Analyze the REAL data gathered from this website.
+Analyze and respond with:
+1. **Site Type**: What kind of site is this?
+2. **Key Data Elements**: What HTML patterns/selectors contain the requested data? (classes, IDs, semantic tags)
+3. **Pagination**: How is pagination implemented? (query params, infinite scroll, load-more buttons?)
+4. **API Endpoints**: Any XHR/JSON APIs that expose the data directly?
+5. **Crawl Strategy**: List of URLs/patterns to crawl to get complete data
+6. **Data Fields Mapping**: For each field the user wants, what HTML element contains it?
+7. **Confidence**: How confident are you in the extraction strategy? What might be missing?
 
-A bot crawler visited the site with Playwright and dynamically scanned the DOM — it discovered every CSS class, data attribute, and HTML element on each page. This is raw, unfiltered discovery. Your job is to interpret what was found and decide what's useful for extracting the user's requested data.
+Be specific and reference exact class names or patterns you see in the content above.`;
 
-Website URL: ${websiteUrl}
-User Instructions: ${instructions}
-${isDataApi ? `Mode: DATA API (authenticated)\nCredentials: ${credentials?.email ? "email" : ""}${credentials?.password ? ", password" : ""}${credentials?.token ? ", token" : ""}${credentials?.cookies ? ", cookies" : ""}` : "Mode: SCRAPER (public data)"}
-${isCloudflareBlocked ? "\n⚠️ CLOUDFLARE — must use Playwright." : ""}
-
-=== BOT CRAWLER FINDINGS ===
-${buildKnowledgeSummary(knowledge)}
-
-=== INITIAL HTTP FETCH REPORT ===
-${pageReport.slice(0, 6000)}
-
-Based ONLY on the actual data above, analyze:
-1. SITE TYPE: What kind of site is this?
-2. USEFUL ELEMENTS: Which of the discovered DOM elements/classes contain the data the user wants? Map them to likely data fields.
-3. REPEATING PATTERNS: Which elements appear multiple times (indicating lists of items)?
-4. CONTENT LINKS: Which discovered links lead to detail/content pages?
-5. MISSING DATA: What does the user want that we haven't found yet? What pages should we crawl next?
-6. APIs: Any intercepted JSON APIs with useful data?
-7. CONFIDENCE: How confident are you that you can build a working scraper from this data? What's missing?
-
-Be specific — reference the exact selectors, class names, and data values discovered.`;
-
-    knowledge.analysis = await chatCompletion(modelId, [
-      { role: "user", content: analysisPrompt },
-    ], 0.2, 3072);
+    analysis = await runArchitect(modelId, [{ role: "user", content: analysisPrompt }], 4096);
 
     emit({
       type: "analyzing",
-      message: "Analysis complete",
-      detail: knowledge.analysis.slice(0, 400) + (knowledge.analysis.length > 400 ? "…" : ""),
-      data: { analysis: knowledge.analysis },
+      message: "Architecture analysis complete",
+      detail: analysis.slice(0, 300) + (analysis.length > 300 ? "…" : ""),
+      data: { analysis },
     });
 
-    await sleep(300);
+    await sleep(200);
 
-    // ── Iterative agent loop ────────────────────────────────────────────────
-    for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-      const unvisitedUrls = knowledge.discoveredDetailUrls
-        .filter((u) => !knowledge.visitedUrls.has(u))
-        .slice(0, 5);
+    // ── Phase 3: Schema Generation (Data Surgeon) ───────────────────────────
+    emit({ type: "thinking", message: "Data Surgeon extracting schema", detail: "Mapping fields with sub-second precision…" });
 
-      const evaluatePrompt = `You are an AI agent building a web scraper. Your job is to decide: do I have enough REAL data to generate a working scraper, or do I need to gather more?
+    const schemaPrompt = `Based on the site analysis below, generate a JSON schema for the data to extract.
 
-Website URL: ${websiteUrl}
-User wants: ${instructions}
-${isDataApi ? "Mode: DATA API" : "Mode: SCRAPER"}
+Target: ${websiteUrl}
+User Request: ${instructions}
 
-=== EVERYTHING I KNOW ===
-${buildKnowledgeSummary(knowledge)}
+## Site Analysis
+${analysis.slice(0, 3000)}
 
-=== MY ANALYSIS ===
-${knowledge.analysis.slice(0, 2000)}
+## Raw Content Sample
+${combinedMarkdown.slice(0, 4000)}
 
-SELF-CHECK — ask yourself honestly:
-1. Did I find the actual DOM elements/classes that contain the user's requested data?
-2. Do I have real CSS selectors with real text/href/src values — not assumptions?
-3. Do I know the URL pattern for content/detail pages?
-4. Can I map each data field to a specific selector I discovered?
-5. Did I find the data extraction approach WITHOUT ASSUMING anything?
+Return ONLY a valid JSON object representing one record with all fields the user requested.
+Use camelCase field names. Include all data fields visible in the content.
+No markdown, no explanation — pure JSON only.`;
 
-If YES to most → choose "generate_schema" (if no schema yet) or "generate_code" (if schema exists).
-If NO → I need more data. Choose what to do next.
+    const schemaRaw = await runExtractor(modelId, [{ role: "user", content: schemaPrompt }], 1024);
+    schema = extractJson(schemaRaw);
 
-${knowledge.crawledPages.length === 0 ? "⚠️ I haven't crawled any pages! I MUST crawl first." : ""}
-${knowledge.crawledPages.length > 0 && knowledge.crawledPages.every((p) => Object.keys(p.sampleTexts).length < 2) ? "⚠️ Pages had very little data. Try different URLs." : ""}
-
-Respond with EXACTLY one JSON object (no markdown, no explanation):
-{
-  "action": "crawl_url" | "crawl_homepage" | "fetch_page" | "generate_schema" | "generate_code",
-  "url": "https://..." (only for crawl_url/fetch_page),
-  "reason": "why this action"
-}
-
-Actions:
-- "crawl_url": Playwright-crawl a URL to discover its DOM structure and data
-- "crawl_homepage": Crawl the site homepage for more content
-- "fetch_page": HTTP fetch a URL
-- "generate_schema": I have enough real data to define the extraction schema
-- "generate_code": I have schema + real selectors, ready for final code
-
-Already visited: ${[...knowledge.visitedUrls].join(", ")}
-Unvisited discovered URLs: ${unvisitedUrls.join(", ") || "none"}`;
-
-      const decisionRaw = await chatCompletion(modelId, [
-        { role: "user", content: evaluatePrompt },
-      ], 0.1, 512);
-
-      let decision: { action: string; url?: string; reason: string };
-      try {
-        const parsed = extractJson(decisionRaw) as { action?: string; url?: string; reason?: string } | null;
-        if (!parsed || !parsed.action) throw new Error("Invalid");
-        decision = { action: parsed.action, url: parsed.url, reason: parsed.reason ?? "" };
-      } catch {
-        if (knowledge.schema) {
-          decision = { action: "generate_code", reason: "Proceeding with available data" };
-        } else if (knowledge.crawledPages.length > 0) {
-          decision = { action: "generate_schema", reason: "Generating schema from crawl data" };
-        } else {
-          decision = { action: "crawl_homepage", reason: "Need to crawl first" };
-        }
-      }
-
-      emit({
-        type: "thinking",
-        message: `Agent: ${decision.action.replace(/_/g, " ")}`,
-        detail: decision.reason,
-      });
-
-      if (decision.action === "crawl_url" && decision.url) {
-        let targetUrl = decision.url;
-        if (knowledge.visitedUrls.has(targetUrl)) {
-          const unvisited = knowledge.discoveredDetailUrls.find((u) => !knowledge.visitedUrls.has(u));
-          if (unvisited) {
-            targetUrl = unvisited;
-          } else {
-            break;
-          }
-        }
-
-        emit({
-          type: "crawling",
-          message: `Crawling: ${targetUrl}`,
-          detail: "Discovering DOM structure and data…",
-        });
-
-        try {
-          const result = await crawlSiteForDiscovery(targetUrl, [], 2);
-          mergeDiscovery(knowledge, result);
-          emit({
-            type: "crawling",
-            message: `Crawled ${result.pages.length} page(s)`,
-            detail: `${result.discoveredDetailUrls.length} links · ${result.allInterceptedApis.length} APIs`,
-          });
-        } catch (err) {
-          emit({ type: "crawling", message: "Crawl failed", detail: `${err instanceof Error ? err.message : "Unknown"}` });
-        }
-        await sleep(300);
-        continue;
-      }
-
-      if (decision.action === "crawl_homepage") {
-        const homeUrl = new URL("/", websiteUrl).href;
-        emit({
-          type: "crawling",
-          message: `Crawling homepage: ${homeUrl}`,
-          detail: "Discovering content from homepage…",
-        });
-
-        try {
-          const result = await crawlSiteForDiscovery(homeUrl, [], 3);
-          mergeDiscovery(knowledge, result);
-          emit({
-            type: "crawling",
-            message: `Homepage: ${result.pages.length} page(s)`,
-            detail: `${result.discoveredDetailUrls.length} links · ${result.allInterceptedApis.length} APIs`,
-          });
-        } catch (err) {
-          emit({ type: "crawling", message: "Homepage crawl failed", detail: `${err instanceof Error ? err.message : "Unknown"}` });
-        }
-        await sleep(300);
-        continue;
-      }
-
-      if (decision.action === "fetch_page" && decision.url) {
-        emit({
-          type: "fetching",
-          message: `Fetching: ${decision.url}`,
-          detail: "HTTP request for data…",
-        });
-
-        try {
-          const fetchedPage = await tryFetchPage(decision.url);
-          if (fetchedPage) {
-            knowledge.fetchedPages.push(fetchedPage);
-            knowledge.visitedUrls.add(decision.url);
-            for (const ep of fetchedPage.probedEndpoints.filter((ep) => ep.isJsonApi)) {
-              if (!knowledge.interceptedApis.some((a) => a.url === ep.url)) {
-                knowledge.interceptedApis.push({ url: ep.url, sampleData: ep.sampleData, method: ep.method });
-              }
-            }
-            emit({
-              type: "browsing",
-              message: `Fetched ${decision.url}`,
-              detail: `Status ${fetchedPage.statusCode} · ${fetchedPage.discoveredEndpoints.length} endpoints`,
-            });
-          }
-        } catch {}
-        await sleep(300);
-        continue;
-      }
-
-      if (decision.action === "generate_schema") {
-        emit({
-          type: "thinking",
-          message: "Generating schema from real crawl data",
-          detail: "Using actual discovered elements and data…",
-        });
-
-        const sampleData = buildCrawlSampleData(knowledge.crawledPages);
-        const apiSample = knowledge.interceptedApis.length > 0
-          ? `\n\nLive API sample:\n${knowledge.interceptedApis[0].sampleData.slice(0, 2000)}`
-          : "";
-        const inlineData = knowledge.fetchedPages
-          .flatMap((p) => p.inlineJsonData).slice(0, 3)
-          .map((d, i) => `[${i + 1}]: ${d.slice(0, 1500)}`).join("\n");
-
-        const schemaPrompt = `Based on REAL data discovered by crawling ${websiteUrl}, generate a JSON schema for each extracted record.
-
-User wants: ${instructions}
-
-=== REAL DATA FROM PAGES ===
-${sampleData || "No sample text data."}
-
-=== DISCOVERED DOM ELEMENTS ===
-${buildElementsReport(knowledge.crawledPages).slice(0, 3000)}
-
-${inlineData ? `=== INLINE DATA ===\n${inlineData}` : ""}${apiSample}
-
-=== ANALYSIS ===
-${knowledge.analysis.slice(0, 1500)}
-
-RULES:
-- Schema fields MUST match actual data found on the site
-- Use the real class names and element structure discovered by the bot
-- Only include fields you can actually see evidence for in the crawl data
-- If the user asked for specific fields, include them and note which selector maps to each
-
-Return ONLY a valid JSON object. camelCase fields. No explanation, no markdown.`;
-
-        const schemaRaw = await chatCompletion(modelId, [{ role: "user", content: schemaPrompt }], 0.2, 1024);
-
-        try {
-          knowledge.schema = extractJson(schemaRaw);
-        } catch { knowledge.schema = null; }
-
-        if (!knowledge.schema || Object.keys(knowledge.schema).length < 3) {
-          knowledge.schema = { ...FALLBACK_SCHEMA };
-        }
-
-        emit({
-          type: "analyzing",
-          message: "Schema generated",
-          detail: `${Object.keys(knowledge.schema).length} fields`,
-          data: { schema: knowledge.schema },
-        });
-
-        if (sessionId) {
-          await updateSession(sessionId, { suggested_schema: knowledge.schema });
-        }
-        await sleep(300);
-        continue;
-      }
-
-      if (decision.action === "generate_code") {
-        break;
-      }
-
-      break;
+    if (!schema || Object.keys(schema).length < 2) {
+      schema = { ...FALLBACK_SCHEMA };
     }
-
-    // ── Final: Generate the scraper ─────────────────────────────────────────
-
-    if (!knowledge.schema) {
-      knowledge.schema = { ...FALLBACK_SCHEMA };
-    }
-    const schema = knowledge.schema;
 
     emit({
-      type: "refining",
-      message: "Writing technical spec from real discoveries",
-      detail: "Creating extraction plan using actual DOM elements found by bot crawler…",
+      type: "generating",
+      message: "Schema extracted",
+      detail: `${Object.keys(schema).length} fields identified`,
+      data: { schema },
     });
 
-    const elementsReport = buildElementsReport(knowledge.crawledPages);
-    const crawlSampleData = buildCrawlSampleData(knowledge.crawledPages);
-    const detailUrlExamples = knowledge.discoveredDetailUrls.slice(0, 10).join("\n  ");
+    if (sessionId) {
+      await updateSession(sessionId, { suggested_schema: schema });
+    }
 
-    const allLiveApis = [
-      ...knowledge.interceptedApis,
-      ...knowledge.fetchedPages.flatMap((p) =>
-        p.probedEndpoints.filter((ep) => ep.isJsonApi).map((ep) => ({
-          url: ep.url, sampleData: ep.sampleData, method: ep.method,
-        }))
-      ),
-    ];
+    await sleep(200);
 
-    const discoveredEndpointsText = knowledge.fetchedPages
-      .flatMap((p) => p.discoveredEndpoints)
-      .map((ep) => `[${ep.method}] ${ep.url} (${ep.source})`)
-      .join("\n");
+    // ── Phase 4: Technical Spec Refinement ──────────────────────────────────
+    emit({ type: "refining", message: "Refining technical specification", detail: "Writing precise extraction blueprint…" });
 
-    const inlineDataText = knowledge.fetchedPages
-      .flatMap((p) => p.inlineJsonData).slice(0, 5)
-      .map((d, i) => `[${i + 1}]: ${d.slice(0, 2000)}`).join("\n");
+    const specPrompt = `You are a senior ${langLabel} web scraping engineer. Write a concise technical specification for a production scraper.
 
-    const firstHtml = knowledge.crawledPages[0]?.htmlSnippet.slice(0, 6000)
-      ?? knowledge.fetchedPages[0]?.truncatedHtml.slice(0, 6000) ?? "";
-
-    const refinePrompt = `You are a senior ${langLabel} developer. Write a technical specification for a ${isDataApi ? "data API extractor" : "web crawler"}.
-
-A bot crawler dynamically scanned the website's DOM and discovered the actual elements, classes, and data on each page. Use these REAL discoveries — do not guess or assume selectors.
-
-URL: ${websiteUrl}
-Instructions: ${instructions}
-Mode: ${isDataApi ? "DATA API (authenticated)" : "SCRAPER (public data)"}
+Target: ${websiteUrl}
+Request: ${instructions}
+Mode: ${isDataApi ? "Data API (authenticated)" : "Web Scraper (public)"}
 Schema: ${JSON.stringify(schema, null, 2)}
-${isCloudflareBlocked ? "⚠️ CLOUDFLARE — ALL requests through Playwright." : ""}
 
-=== DISCOVERED DOM ELEMENTS (real classes, real data) ===
-${elementsReport || "No elements discovered."}
+## Site Analysis
+${analysis.slice(0, 2500)}
 
-=== CONTENT LINKS FOUND ===
-${detailUrlExamples ? `  ${detailUrlExamples}` : "None."}
-
-=== SAMPLE DATA FROM PAGES ===
-${crawlSampleData || "No sample data."}
-
-=== INTERCEPTED APIs ===
-${allLiveApis.slice(0, 5).map((a) => `[${a.method}] ${a.url}\n  ${a.sampleData.slice(0, 500)}`).join("\n") || "None."}
-
-=== ANALYSIS ===
-${knowledge.analysis.slice(0, 1500)}
-
-=== HTML ===
-${firstHtml}
+## Key API Endpoints Found
+${discoveredApis.slice(0, 3).map((a) => `- ${a.url} → ${a.sampleData.slice(0, 200)}`).join("\n") || "None"}
 
 Write the spec:
-1. Map each schema field to a SPECIFIC discovered element/class from above
-2. CRAWLING is primary: navigate pages, follow links, extract per page
-3. All requests through Playwright
-4. Include fallbacks: homepage crawl, sitemap
-5. Error handling: retry 3x, skip failures
-No comments.`;
+1. Exact CSS selectors / XPath for each schema field (from real analysis above)
+2. Crawl loop: starting URL, link-following pattern, pagination strategy
+3. API approach: if JSON APIs available, use them preferentially
+4. Auth flow if applicable
+5. Error handling and retry strategy
 
-    const refinedPrompt = await chatCompletion(modelId, [
-      { role: "user", content: refinePrompt },
-    ], 0.3, 3072);
+Keep it technical and precise. No generic advice.`;
+
+    const refinedPrompt = await runArchitect(modelId, [{ role: "user", content: specPrompt }], 3000);
 
     emit({
       type: "refining",
       message: "Technical spec complete",
-      detail: refinedPrompt.slice(0, 300) + (refinedPrompt.length > 300 ? "…" : ""),
+      detail: refinedPrompt.slice(0, 250) + "…",
       data: { refinedPrompt },
     });
 
@@ -672,116 +310,83 @@ No comments.`;
       await updateSession(sessionId, { refined_prompt: refinedPrompt });
     }
 
-    await sleep(300);
+    await sleep(200);
 
-    // ── Build the scraper ───────────────────────────────────────────────────
+    // ── Phase 5: Code Generation (Streaming) ────────────────────────────────
     emit({
       type: "building",
-      message: `Building ${langLabel} ${isDataApi ? "data API extractor" : "web crawler"}`,
-      detail: `Generating .${ext} crawler with real discovered selectors…`,
+      message: `Building ${langLabel} scraper`,
+      detail: `Streaming production-ready .${ext} code…`,
     });
-
-    await sleep(400);
 
     const baseFile = isDataApi
       ? (isTs ? generateDataApiTemplate(websiteUrl, schema, instructions, credentials)
-             : generateDataApiPyTemplate(websiteUrl, schema, instructions, credentials))
+               : generateDataApiPyTemplate(websiteUrl, schema, instructions, credentials))
       : (isTs ? generateApiFileTemplate(websiteUrl, schema, instructions)
-             : generatePyFileTemplate(websiteUrl, schema, instructions));
+               : generatePyFileTemplate(websiteUrl, schema, instructions));
 
-    const TEMPLATE_PREVIEW_LINES = 60;
-    const enhancePrompt = `You are a senior ${langLabel} web scraping engineer. Write a complete, production-ready ${langLabel} script that CRAWLS and extracts data using Playwright.
+    const buildPrompt = `You are a senior ${langLabel} web scraping engineer. Write a complete, production-ready ${langLabel} script.
 
-OUTPUT: ONLY raw ${langLabel} code. No markdown fences, no explanation, no comments. Self-contained.
+CRITICAL REQUIREMENTS:
+- Output ONLY raw ${langLabel} code. No markdown fences, no explanation, no comments.
+- Self-contained single file
+- Use Playwright for browser automation
+- Implement all error handling with try/catch and retries
 
-CRITICAL: A bot crawler dynamically scanned the actual website DOM. It discovered every CSS class, data attribute, and element. Use the REAL class names and selectors it found — do NOT invent generic selectors.
-
-=== TARGET ===
+## Target
 URL: ${websiteUrl}
 Instructions: ${instructions}
-Mode: ${isDataApi ? "DATA API (authenticated)" : "SCRAPER (public data)"}
+Mode: ${isDataApi ? "Authenticated Data API" : "Public Scraper"}
 Schema: ${JSON.stringify(schema, null, 2)}
-${isCloudflareBlocked ? "⚠️ CLOUDFLARE — ALL requests through Playwright." : ""}
 
-=== REAL DOM ELEMENTS DISCOVERED (USE THESE!) ===
-${elementsReport || "No specific elements — use HTML below."}
-
-=== SAMPLE DATA FROM PAGES ===
-${crawlSampleData || "No sample data."}
-
-=== CONTENT LINKS FOUND ===
-${detailUrlExamples ? `  ${detailUrlExamples}` : "None."}
-
-=== INTERCEPTED APIs ===
-${allLiveApis.slice(0, 5).map((a) => `[${a.method}] ${a.url}\n  ${a.sampleData.slice(0, 500)}`).join("\n") || "None."}
-
-=== ENDPOINTS ===
-${discoveredEndpointsText || "None."}
-
-=== INLINE DATA ===
-${inlineDataText || "None."}
-
-=== HTML FROM CRAWLED PAGES ===
-${knowledge.crawledPages[0]?.htmlSnippet.slice(0, 12000) ?? knowledge.fetchedPages[0]?.truncatedHtml.slice(0, 12000) ?? ""}
-
-=== TECHNICAL SPEC ===
+## Technical Specification (follow exactly)
 ${refinedPrompt.slice(0, 3000)}
 
-${isDataApi ? `=== AUTH ===\nCredentials: ${credentials?.email ? "email" : ""}${credentials?.password ? ", password" : ""}${credentials?.token ? ", token" : ""}${credentials?.cookies ? ", cookies" : ""}` : ""}
+## Site Content Context
+${combinedMarkdown.slice(0, 6000)}
 
-=== REQUIREMENTS ===
-1. USE REAL SELECTORS: The bot discovered actual CSS classes and elements on the site. Use those exact class names and selectors. For each schema field, find the matching discovered element.
+## API Endpoints Discovered
+${discoveredApis.slice(0, 5).map((a) => `[${a.method}] ${a.url}\n  Sample: ${a.sampleData.slice(0, 400)}`).join("\n") || "None"}
+${isDataApi && credentials ? `\n## Authentication\nAvailable: ${Object.keys(credentials).filter((k) => credentials[k as keyof AuthCredentials]).join(", ")}` : ""}
 
-2. CRAWL STRATEGY:
-   a. Launch Playwright, navigate to ${websiteUrl}
-   b. page.on('response') to capture JSON APIs
-   c. Find content links using discovered element patterns
-   d. Visit each content page, extract data using discovered selectors
-   e. Paginate through listings
-   f. Homepage fallback if target URL is sparse
-   g. Sitemap fallback
+## Code Structure Reference
+${baseFile.split("\n").slice(0, 50).join("\n")}
 
-3. PER-PAGE: Use discovered selectors for each field. Intercepted API data as supplement. fillMissingFields() for gaps.
+## Requirements
+1. Real selectors from the analysis above — no generic .item, .title placeholders
+2. Crawl strategy: ${isDataApi ? "authenticate first, then extract user data" : "paginate through listings, follow content links"}
+3. Intercept page.on('response') to capture JSON APIs
+4. Output: JSON file + stdout { total_items, scraped_at, source_url, items }
+5. ${langLabel === "TypeScript" ? "Strict TypeScript, import playwright, class-based" : "Python type hints, playwright.sync_api, class-based"}
+6. Deduplication by URL/ID
+7. Retry logic: 3 attempts per page, exponential backoff
+8. No comments in output code
 
-4. ERRORS: try/catch everywhere, retry 3x, skip failures, continue.
+Write the COMPLETE file now:`;
 
-5. DATA: Generate IDs from URL hash, provider = hostname, deduplicate by URL/ID.
-
-6. OUTPUT: JSON { total_items, scraped_at, source_url, items } → file + stdout.
-
-7. CODE: ${isTs ? "Strict TypeScript, import playwright" : "Python type hints, playwright.sync_api"}. Class: init(), scrape(), close(). No comments.
-
-TEMPLATE (structural guide — replace ALL generic selectors with real discovered ones):
-${baseFile.split("\n").slice(0, TEMPLATE_PREVIEW_LINES).join("\n")}
-
-Write the COMPLETE file. Use REAL discovered selectors. No generic selectors.`;
-
-    let apiFileContent = baseFile;
     const streamParts: string[] = [];
 
-    emit({
-      type: "generating",
-      message: `Streaming ${langLabel} crawler code`,
-      detail: `Writing ${isDataApi ? "data API extractor" : "web crawler"} with real discovered selectors…`,
-    });
+    emit({ type: "generating", message: `Streaming ${langLabel} code`, detail: "Writing production scraper…" });
 
     try {
-      for await (const chunk of streamCompletion(modelId, [{ role: "user", content: enhancePrompt }], 0.2, 16384)) {
+      for await (const chunk of streamCoder(modelId, [{ role: "user", content: buildPrompt }], 16384)) {
         streamParts.push(chunk);
         sendSSE(res, "code_chunk", { chunk });
       }
-      let enhanced = streamParts.join("");
-      if (enhanced.length > 500) {
-        enhanced = enhanced
-          .replace(/^```(?:typescript|ts|python|py|javascript|js)?\s*\n?/gm, "")
-          .replace(/\n?```\s*$/gm, "")
-          .trim();
-        if (enhanced.length > 500) {
-          apiFileContent = enhanced;
-        }
-      }
     } catch (err) {
       console.warn("Stream failed, using base template:", err);
+    }
+
+    let apiFileContent = baseFile;
+    if (streamParts.length > 0) {
+      let enhanced = streamParts.join("");
+      enhanced = enhanced
+        .replace(/^```(?:typescript|ts|python|py|javascript|js)?\s*\n?/gm, "")
+        .replace(/\n?```\s*$/gm, "")
+        .trim();
+      if (enhanced.length > 500) {
+        apiFileContent = enhanced;
+      }
     }
 
     if (sessionId) {
@@ -790,13 +395,13 @@ Write the COMPLETE file. Use REAL discovered selectors. No generic selectors.`;
 
     emit({
       type: "complete",
-      message: `${isDataApi ? "Data API extractor" : "Web crawler"} file ready`,
-      detail: `${apiFileContent.split("\n").length} lines · ${knowledge.crawledPages.length} pages crawled · ${knowledge.interceptedApis.length} APIs · Real selectors`,
+      message: `${isDataApi ? "Data API extractor" : "Web scraper"} ready`,
+      detail: `${apiFileContent.split("\n").length} lines · ${crawlSummary.pages} pages crawled · ${crawlSummary.apis} APIs discovered`,
       data: {
         apiFile: apiFileContent,
         schema,
         refinedPrompt,
-        analysis: knowledge.analysis,
+        analysis,
       },
     });
 
@@ -810,6 +415,153 @@ Write the COMPLETE file. Use REAL discovered selectors. No generic selectors.`;
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+// ─── Background job runner (for /crawl endpoint) ─────────────────────────────
+
+export async function runJobInBackground(jobId: string): Promise<void> {
+  const job = jobQueue.get(jobId);
+  if (!job) return;
+
+  const isTs = job.language !== "python";
+  const langLabel = isTs ? "TypeScript" : "Python";
+  const isDataApi = job.extractionMode === "data_api";
+
+  const pushStep = (step: AgentStep) => {
+    job.steps.push(step);
+    job.updatedAt = Date.now();
+  };
+
+  const setStatus = (status: JobStatus, progress: number) => {
+    job.status = status;
+    job.progress = progress;
+    job.updatedAt = Date.now();
+  };
+
+  let schema: Record<string, unknown> | null = null;
+  let analysis = "";
+  let refinedPrompt = "";
+
+  try {
+    setStatus("discovering", 5);
+    pushStep({ type: "discovering", message: "Launching Discovery Engine", detail: job.websiteUrl });
+
+    const crawlResult = await crawl(
+      job.websiteUrl,
+      (progress) => {
+        pushStep({
+          type: progress.phase === "distilling" ? "distilling" : "discovering",
+          message: progress.message,
+          detail: progress.detail,
+        });
+      },
+      { maxPages: 6, maxDepth: 2, autoExplore: true }
+    );
+
+    const { combinedMarkdown, siteMap, totalTokens, pages } = crawlResult;
+
+    setStatus("extracting", 30);
+    pushStep({
+      type: "crawling",
+      message: "Discovery complete",
+      detail: `${pages.length} page(s) · ${totalTokens.toLocaleString()} tokens · ${siteMap.apiEndpoints.length} API(s)`,
+    });
+
+    // Analysis
+    setStatus("extracting", 45);
+    pushStep({ type: "analyzing", message: "Site Architect analyzing structure" });
+
+    const markdownTokens = estimateTokens(combinedMarkdown);
+    let analysisContext = combinedMarkdown;
+    if (markdownTokens > 12000) {
+      const chunks = chunkText(combinedMarkdown, 10000);
+      analysisContext = chunks.slice(0, 2).join("\n\n---\n\n");
+      pushStep({ type: "distilling", message: "Token compression applied", detail: `${markdownTokens.toLocaleString()} tokens → chunked` });
+    }
+
+    const apiSummary = siteMap.apiEndpoints.length > 0
+      ? "\n## APIs:\n" + siteMap.apiEndpoints.slice(0, 3).map((a) => `- ${a.url}`).join("\n")
+      : "";
+
+    analysis = await runArchitect(job.modelId, [{
+      role: "user",
+      content: `Analyze site for web scraping.\nTarget: ${job.websiteUrl}\nRequest: ${job.instructions}\n\n${analysisContext.slice(0, 10000)}${apiSummary}`,
+    }], 4096);
+
+    pushStep({ type: "analyzing", message: "Analysis complete", detail: analysis.slice(0, 200) + "…", data: { analysis } });
+
+    // Schema
+    setStatus("extracting", 60);
+    const schemaRaw = await runExtractor(job.modelId, [{
+      role: "user",
+      content: `Generate JSON schema for: ${job.instructions}\nSite: ${job.websiteUrl}\n\nAnalysis:\n${analysis.slice(0, 2000)}\n\nContent:\n${combinedMarkdown.slice(0, 3000)}\n\nReturn ONLY JSON:`,
+    }], 1024);
+
+    schema = extractJson(schemaRaw) ?? { ...FALLBACK_SCHEMA };
+    pushStep({ type: "generating", message: "Schema ready", detail: `${Object.keys(schema).length} fields`, data: { schema } });
+
+    if (job.sessionId) {
+      await updateSession(job.sessionId, { suggested_schema: schema });
+    }
+
+    // Spec
+    setStatus("building", 70);
+    pushStep({ type: "refining", message: "Writing technical spec" });
+
+    refinedPrompt = await runArchitect(job.modelId, [{
+      role: "user",
+      content: `Write a technical scraping spec for ${langLabel}.\nURL: ${job.websiteUrl}\nSchema: ${JSON.stringify(schema)}\nAnalysis:\n${analysis.slice(0, 2000)}`,
+    }], 2048);
+
+    pushStep({ type: "refining", message: "Spec complete", data: { refinedPrompt } });
+
+    if (job.sessionId) {
+      await updateSession(job.sessionId, { refined_prompt: refinedPrompt });
+    }
+
+    // Code
+    setStatus("building", 80);
+    pushStep({ type: "building", message: `Building ${langLabel} scraper` });
+
+    const baseFile = isDataApi
+      ? (isTs ? generateDataApiTemplate(job.websiteUrl, schema, job.instructions, job.credentials)
+               : generateDataApiPyTemplate(job.websiteUrl, schema, job.instructions, job.credentials))
+      : (isTs ? generateApiFileTemplate(job.websiteUrl, schema, job.instructions)
+               : generatePyFileTemplate(job.websiteUrl, schema, job.instructions));
+
+    const buildMsg = [{ role: "user" as const, content: `Write complete ${langLabel} scraper.\nURL: ${job.websiteUrl}\nSpec:\n${refinedPrompt.slice(0, 2000)}\nContent:\n${combinedMarkdown.slice(0, 4000)}\nOutput only raw ${langLabel}:` }];
+
+    let apiFileContent = baseFile;
+    const streamParts: string[] = [];
+    try {
+      for await (const chunk of streamCoder(job.modelId, buildMsg, 16384)) {
+        streamParts.push(chunk);
+        job.codeChunks.push(chunk);
+        job.updatedAt = Date.now();
+      }
+      let enhanced = streamParts.join("")
+        .replace(/^```(?:typescript|ts|python|py)?\s*\n?/gm, "")
+        .replace(/\n?```\s*$/gm, "")
+        .trim();
+      if (enhanced.length > 500) apiFileContent = enhanced;
+    } catch (err) {
+      console.warn("Job stream failed:", err);
+    }
+
+    if (job.sessionId) {
+      await updateSession(job.sessionId, { generated_api_file: apiFileContent });
+    }
+
+    job.result = { schema: schema as Record<string, unknown>, refinedPrompt, analysis, apiFile: apiFileContent };
+    setStatus("completed", 100);
+    pushStep({
+      type: "complete",
+      message: "Scraper ready",
+      detail: `${apiFileContent.split("\n").length} lines`,
+      data: { apiFile: apiFileContent, schema, refinedPrompt, analysis },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown";
+    job.error = message;
+    setStatus("failed", 0);
+    pushStep({ type: "error", message: "Job failed", detail: message });
+  }
 }

@@ -1,7 +1,8 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
-import { runAgentSession } from "../services/agentService.js";
+import { runAgentSession, createJob, getJob, runJobInBackground } from "../services/agentService.js";
 import { chatCompletion } from "../services/aiService.js";
+import { mapSite } from "../services/Crawler.js";
 import {
   createSession,
   getSession,
@@ -127,6 +128,150 @@ router.get("/usage", requireAuth, async (req: Request, res: Response): Promise<v
   const userId = (req as Request & { userId: string }).userId;
   const usage = await getUserDailyUsage(userId);
   res.json({ usage });
+});
+
+// ─── Job Queue Endpoints ──────────────────────────────────────────────────────
+
+const CrawlJobSchema = z.object({
+  websiteUrl: z.string().url("Invalid URL"),
+  instructions: z.string().min(5, "Instructions too short").max(2000),
+  modelId: z.string().min(1, "Model ID required"),
+  language: z.enum(["typescript", "python"]).default("typescript"),
+  extractionMode: z.enum(["scraper", "data_api"]).default("scraper"),
+  credentials: z.object({
+    email: z.string().optional(),
+    password: z.string().optional(),
+    token: z.string().optional(),
+    cookies: z.string().optional(),
+  }).optional(),
+});
+
+// POST /api/scraper/crawl — submit a crawl job, returns jobId immediately
+router.post("/crawl", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const parse = CrawlJobSchema.safeParse(req.body);
+  if (!parse.success) {
+    res.status(400).json({ error: parse.error.flatten() });
+    return;
+  }
+
+  const { websiteUrl, instructions, modelId, language, extractionMode, credentials } = parse.data;
+  const userId = (req as Request & { userId: string }).userId;
+
+  const usage = await getUserDailyUsage(userId);
+  if (!usage.isOwner && usage.used >= usage.limit) {
+    res.status(429).json({
+      error: `Daily limit reached (${usage.used}/${usage.limit}). Resets at midnight UTC.`,
+      usage,
+    });
+    return;
+  }
+
+  if (!usage.isOwner) {
+    await incrementUserDailyUsage(userId);
+  }
+
+  const sessionId = await createSession({ website_url: websiteUrl, instructions, model_id: modelId, user_id: userId });
+
+  const job = createJob({ websiteUrl, instructions, modelId, language, extractionMode, credentials, sessionId });
+
+  // Run in background — do NOT await
+  runJobInBackground(job.jobId).catch((err) =>
+    console.error(`Job ${job.jobId} background error:`, err)
+  );
+
+  res.json({ jobId: job.jobId, sessionId });
+});
+
+// GET /api/scraper/crawl/:jobId — poll job status and steps
+router.get("/crawl/:jobId", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const job = getJob(String(req.params.jobId));
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+
+  // SSE streaming for real-time updates
+  const acceptSSE = req.headers.accept?.includes("text/event-stream");
+  if (acceptSSE) {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+
+    let lastStepIdx = 0;
+    let lastChunkIdx = 0;
+    let lastStatus = "";
+    let lastProgress = -1;
+
+    const poll = setInterval(() => {
+      // Send new steps
+      while (lastStepIdx < job.steps.length) {
+        res.write(`event: step\ndata: ${JSON.stringify(job.steps[lastStepIdx])}\n\n`);
+        lastStepIdx++;
+      }
+      // Send new code chunks
+      while (lastChunkIdx < job.codeChunks.length) {
+        res.write(`event: code_chunk\ndata: ${JSON.stringify({ chunk: job.codeChunks[lastChunkIdx] })}\n\n`);
+        lastChunkIdx++;
+      }
+      // Send status only when it changes
+      if (job.status !== lastStatus || job.progress !== lastProgress) {
+        res.write(`event: status\ndata: ${JSON.stringify({ status: job.status, progress: job.progress })}\n\n`);
+        lastStatus = job.status;
+        lastProgress = job.progress;
+      }
+
+      if (job.status === "completed" || job.status === "failed") {
+        if (job.status === "completed") {
+          res.write(`event: done\ndata: ${JSON.stringify({ sessionId: job.sessionId, result: job.result })}\n\n`);
+        } else {
+          res.write(`event: error\ndata: ${JSON.stringify({ message: job.error })}\n\n`);
+        }
+        clearInterval(poll);
+        res.end();
+      }
+    }, 500);
+
+    req.on("close", () => clearInterval(poll));
+    return;
+  }
+
+  // JSON polling fallback
+  res.json({
+    jobId: job.jobId,
+    status: job.status,
+    progress: job.progress,
+    steps: job.steps,
+    codeGenerated: job.codeChunks.join(""),
+    result: job.result,
+    error: job.error,
+  });
+});
+
+// POST /api/scraper/map — quickly map a site's link structure
+const MapSchema = z.object({
+  websiteUrl: z.string().url("Invalid URL"),
+});
+
+router.post("/map", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const parse = MapSchema.safeParse(req.body);
+  if (!parse.success) {
+    res.status(400).json({ error: parse.error.flatten() });
+    return;
+  }
+
+  const { websiteUrl } = parse.data;
+
+  try {
+    const siteMap = await mapSite(websiteUrl, (_progress) => {
+      // progress is informational only for /map
+    });
+    res.json({ siteMap });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Map failed";
+    res.status(500).json({ error: message });
+  }
 });
 
 export default router;
