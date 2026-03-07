@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Globe, Cpu, ChevronRight } from "lucide-react";
 import type { ModelOption, SessionConfig } from "../types";
@@ -7,6 +7,8 @@ interface Props {
   models: ModelOption[];
   keyStatus: { gemini: number; openrouter: number; groq: number };
   onStart: (config: SessionConfig) => void;
+  /** Optional pre-filled values (e.g. from "Run again" in the Library) */
+  prefill?: Partial<SessionConfig>;
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -15,14 +17,23 @@ const PROVIDER_LABELS: Record<string, string> = {
   groq: "Groq",
 };
 
-export default function ConfigForm({ models, keyStatus, onStart }: Props) {
-  const [websiteUrl, setWebsiteUrl] = useState("");
-  const [instructions, setInstructions] = useState("");
-  const [selectedModel, setSelectedModel] = useState<string>(() => {
-    // Default to first available model
-    return "gemini-2.0-flash";
-  });
+export default function ConfigForm({ models, keyStatus, onStart, prefill }: Props) {
+  const [websiteUrl, setWebsiteUrl] = useState(prefill?.websiteUrl ?? "");
+  const [instructions, setInstructions] = useState(prefill?.instructions ?? "");
+  const [selectedModel, setSelectedModel] = useState<string>(
+    prefill?.modelId ?? "gemini-2.0-flash"
+  );
   const [urlError, setUrlError] = useState("");
+
+  // Sync when prefill changes (e.g. switching back to session tab after "Run again").
+  // Use the whole `prefill` object as the dependency so all three fields are
+  // applied in a single effect run, avoiding staggered re-renders.
+  useEffect(() => {
+    if (!prefill) return;
+    if (prefill.websiteUrl) setWebsiteUrl(prefill.websiteUrl);
+    if (prefill.instructions) setInstructions(prefill.instructions);
+    if (prefill.modelId) setSelectedModel(prefill.modelId);
+  }, [prefill]);
 
   // Group models by provider
   const geminiModels = models.filter((m) => m.provider === "gemini");
