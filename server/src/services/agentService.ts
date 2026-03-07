@@ -47,6 +47,18 @@ function sendSSE(res: Response, event: string, data: unknown): void {
   res.write(`event: ${event}\ndata: ${payload}\n\n`);
 }
 
+const JSON_OBJECT_RE = /\{[\s\S]*\}/;
+const FALLBACK_SCHEMA: Record<string, unknown> = { title: "", url: "", description: "", image: "", tags: [] };
+
+function extractJson(raw: string): Record<string, unknown> | null {
+  try {
+    const match = raw.match(JSON_OBJECT_RE);
+    return match ? JSON.parse(match[0]) : null;
+  } catch {
+    return null;
+  }
+}
+
 function buildKnowledgeSummary(k: AgentKnowledge): string {
   const lines: string[] = [];
 
@@ -400,10 +412,9 @@ Unvisited discovered URLs: ${unvisitedUrls.join(", ") || "none"}`;
 
       let decision: { action: string; url?: string; reason: string };
       try {
-        const jsonMatch = decisionRaw.match(/\{[\s\S]*\}/);
-        const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+        const parsed = extractJson(decisionRaw) as { action?: string; url?: string; reason?: string } | null;
         if (!parsed || !parsed.action) throw new Error("Invalid");
-        decision = parsed;
+        decision = { action: parsed.action, url: parsed.url, reason: parsed.reason ?? "" };
       } catch {
         if (knowledge.schema) {
           decision = { action: "generate_code", reason: "Proceeding with available data" };
@@ -544,12 +555,11 @@ Return ONLY a valid JSON object. camelCase fields. No explanation, no markdown.`
         const schemaRaw = await chatCompletion(modelId, [{ role: "user", content: schemaPrompt }], 0.2, 1024);
 
         try {
-          const jsonMatch = schemaRaw.match(/\{[\s\S]*\}/);
-          knowledge.schema = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+          knowledge.schema = extractJson(schemaRaw);
         } catch { knowledge.schema = null; }
 
         if (!knowledge.schema || Object.keys(knowledge.schema).length < 3) {
-          knowledge.schema = { title: "", url: "", description: "", image: "", tags: [] };
+          knowledge.schema = { ...FALLBACK_SCHEMA };
         }
 
         emit({
@@ -576,7 +586,7 @@ Return ONLY a valid JSON object. camelCase fields. No explanation, no markdown.`
     // ── Final: Generate the scraper ─────────────────────────────────────────
 
     if (!knowledge.schema) {
-      knowledge.schema = { title: "", url: "", description: "", image: "", tags: [] };
+      knowledge.schema = { ...FALLBACK_SCHEMA };
     }
     const schema = knowledge.schema;
 

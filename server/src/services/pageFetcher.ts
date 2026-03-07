@@ -786,7 +786,7 @@ function scanPage(): {
   for (let i = 0; i < linkContainers.length && detailLinks.length < 50; i++) {
     const a = linkContainers[i] as HTMLAnchorElement;
     const href = a.href;
-    if (!href || href.startsWith("javascript:") || href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:")) continue;
+    if (!href || href.startsWith("javascript:") || href.startsWith("data:") || href.startsWith("vbscript:") || href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:")) continue;
     if (seenHrefs.has(href)) continue;
     seenHrefs.add(href);
 
@@ -799,7 +799,7 @@ function scanPage(): {
       parent.tagName === "H2" || parent.tagName === "H3" || parent.tagName === "H4" ||
       (parent.getAttribute("class") || "").length > 0
     );
-    if (isContentLink || a.textContent!.trim().length > 5) {
+    if (isContentLink || (a.textContent?.trim().length ?? 0) > 5) {
       try {
         const resolved = new URL(href, location.href).href;
         if (resolved.startsWith(location.protocol) && new URL(resolved).hostname === location.hostname) {
