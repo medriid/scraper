@@ -571,7 +571,7 @@ Do not include comments in code snippets.`;
       { role: "user", content: refinePrompt },
     ], 0.3, 3072);
 
-    const specMentionsNoData = /no data|no results|insufficient|unable to find|cannot extract|empty|nothing found/i.test(refinedPrompt);
+    const specMentionsNoData = /could not find (?:any|enough) data|no (?:usable |structured |extractable )?data (?:was |were )?found|unable to (?:extract|find|identify) (?:any |sufficient )?data|insufficient data|page (?:appears|seems) (?:to be )?empty|no meaningful content/i.test(refinedPrompt);
 
     if (specMentionsNoData) {
       emit({

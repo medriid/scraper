@@ -634,11 +634,10 @@ export class ${className}Scraper {
     let pageNum = 0;
 
     while (currentUrl && pageNum < CONFIG.maxPages) {
-      pageNum++;
       if (this.visitedUrls.has(currentUrl)) {
-        currentUrl = await this.getNextPageUrl();
-        continue;
+        break;
       }
+      pageNum++;
       this.visitedUrls.add(currentUrl);
       console.log(\`[Crawler] Page \${pageNum}: \${currentUrl}\`);
 
@@ -1176,10 +1175,9 @@ class ${className}Scraper:
         page_num = 0
 
         while current_url and page_num < CONFIG["max_pages"]:
-            page_num += 1
             if current_url in self.visited_urls:
-                current_url = self.get_next_page_url()
-                continue
+                break
+            page_num += 1
             self.visited_urls.add(current_url)
             print(f"[Crawler] Page {page_num}: {current_url}")
 
