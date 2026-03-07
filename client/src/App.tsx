@@ -130,6 +130,8 @@ function AppContent() {
       cfg.instructions,
       cfg.modelId,
       cfg.language,
+      cfg.extractionMode,
+      cfg.credentials,
       (step) => {
         setSteps((prev) => [...prev, step]);
         if (step.type === "complete" && step.data) {

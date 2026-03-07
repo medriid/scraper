@@ -19,6 +19,13 @@ const StartSessionSchema = z.object({
   instructions: z.string().min(5, "Instructions too short").max(2000),
   modelId: z.string().min(1, "Model ID required"),
   language: z.enum(["typescript", "python"]).default("typescript"),
+  extractionMode: z.enum(["scraper", "data_api"]).default("scraper"),
+  credentials: z.object({
+    email: z.string().optional(),
+    password: z.string().optional(),
+    token: z.string().optional(),
+    cookies: z.string().optional(),
+  }).optional(),
 });
 
 // POST /api/scraper/start — creates DB session + streams agent via SSE
@@ -29,7 +36,7 @@ router.post("/start", requireAuth, async (req: Request, res: Response): Promise<
     return;
   }
 
-  const { websiteUrl, instructions, modelId, language } = parse.data;
+  const { websiteUrl, instructions, modelId, language, extractionMode, credentials } = parse.data;
   const userId = (req as Request & { userId: string }).userId;
 
   // ── Per-user daily rate limiting ──────────────────────────────────────────
@@ -57,7 +64,7 @@ router.post("/start", requireAuth, async (req: Request, res: Response): Promise<
   // Create DB session (best-effort; null if Supabase not configured)
   const sessionId = await createSession({ website_url: websiteUrl, instructions, model_id: modelId, user_id: userId });
 
-  await runAgentSession(sessionId, websiteUrl, instructions, modelId, language, res);
+  await runAgentSession(sessionId, websiteUrl, instructions, modelId, language, extractionMode, credentials, res);
 });
 
 // GET /api/scraper/sessions — list recent sessions

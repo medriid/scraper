@@ -102,6 +102,8 @@ export function startAgentSession(
   instructions: string,
   modelId: string,
   language: string,
+  extractionMode: string,
+  credentials: import("../types").AuthCredentials | undefined,
   onStep: (step: import("../types").AgentStep) => void,
   onCodeChunk: (chunk: string) => void,
   onDone: (sessionId: string | null) => void,
@@ -114,10 +116,15 @@ export function startAgentSession(
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
+    const body: Record<string, unknown> = { websiteUrl, instructions, modelId, language, extractionMode };
+    if (credentials && Object.values(credentials).some(Boolean)) {
+      body.credentials = credentials;
+    }
+
     const res = await fetch(`${BASE}/scraper/start`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ websiteUrl, instructions, modelId, language }),
+      body: JSON.stringify(body),
     });
 
     if (!res.ok || !res.body) {
