@@ -13,9 +13,11 @@ interface HistorySession {
 interface Props {
   onClose: () => void;
   token?: string;
+  /** When true, renders as a full page panel instead of a floating drawer */
+  inline?: boolean;
 }
 
-export default function SessionHistory({ onClose, token }: Props) {
+export default function SessionHistory({ onClose, token, inline }: Props) {
   const [sessions, setSessions] = useState<HistorySession[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -32,7 +34,7 @@ export default function SessionHistory({ onClose, token }: Props) {
   return (
     <div
       className="panel"
-      style={{ marginTop: "var(--space-lg)" }}
+      style={{ marginTop: inline ? 0 : "var(--space-lg)" }}
     >
       <div className="panel-header">
         <div className="panel-icon"><Clock size={15} /></div>
@@ -40,7 +42,9 @@ export default function SessionHistory({ onClose, token }: Props) {
           <div className="panel-title">Session History</div>
           <div className="panel-subtitle">Recent scraping sessions from Supabase</div>
         </div>
-        <button className="btn btn-ghost" onClick={onClose}><X size={14} /></button>
+        {!inline && (
+          <button className="btn btn-ghost" onClick={onClose}><X size={14} /></button>
+        )}
       </div>
 
       {loading && (
