@@ -7,6 +7,7 @@ import path from "path";
 import scraperRouter from "./routes/scraper.js";
 import modelsRouter from "./routes/models.js";
 import authRouter from "./routes/auth.js";
+import teamsRouter from "./routes/teams.js";
 import { checkDatabaseConnection } from "./services/supabaseService.js";
 
 const app = express();
@@ -73,6 +74,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use("/api/scraper", scraperRouter);
 app.use("/api/models", modelsRouter);
 app.use("/api/auth", authRouter);
+app.use("/api/teams", teamsRouter);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", ts: new Date().toISOString() });

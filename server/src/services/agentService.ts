@@ -47,18 +47,19 @@ export async function runAgentSession(
 
     await sleep(400);
 
-    const analysisPrompt = `You are an expert web scraping analyst. Analyse this website and instructions:
+    const analysisPrompt = `You are an expert web scraping engineer. Your job is to analyse a website and figure out how to write a TypeScript script that, when executed, will fetch and extract all the required data from that website.
 
 Website URL: ${websiteUrl}
-Instructions: ${instructions}
+User Instructions: ${instructions}
 
-Your task:
-1. Identify what type of data this website likely contains (e-commerce, news, directory, etc.)
-2. Suggest the best CSS selectors and page structure based on common patterns for this type of site
-3. Identify any anti-scraping measures to watch for (rate limiting, JS rendering, CAPTCHAs, etc.)
-4. Suggest optimal scraping strategy (pagination, infinite scroll, API endpoints, etc.)
+Analyse the website and provide:
+1. What type of data this website contains (e-commerce, news, directory, social, API-backed, etc.)
+2. The likely HTML structure — repeating containers (cards, list items, table rows, article elements), key CSS selectors and data attributes that the scraper script should target
+3. Anti-scraping measures to handle in the script (rate limiting, JS rendering, CAPTCHAs, auth walls, etc.)
+4. Pagination strategy the script should implement (numbered pages, infinite scroll, "load more" button, cursor-based API, etc.)
+5. Whether the site uses server-side rendering or client-side rendering (important for deciding between fetch+parse vs Playwright)
 
-Be specific and technical. Format as structured analysis.`;
+Be specific and technical. The output of this analysis will be used to write a TypeScript scraper script.`;
 
     emit({
       type: "thinking",
@@ -86,16 +87,16 @@ Be specific and technical. Format as structured analysis.`;
       detail: "Inferring data structure from instructions and website type…",
     });
 
-    const schemaPrompt = `Based on this website and instructions, generate a JSON schema for the scraped data.
+    const schemaPrompt = `Based on this website and instructions, generate a JSON schema that describes each record the scraper script will extract.
 
 Website URL: ${websiteUrl}
 Instructions: ${instructions}
 Analysis: ${analysis.slice(0, 500)}
 
-Return ONLY a valid JSON object (no markdown, no explanation) representing a single scraped record.
-Use realistic field names (camelCase). Include all relevant fields.
-Example fields: title, url, price, description, imageUrl, date, author, rating, etc.
-Choose fields that are actually relevant to this specific website.`;
+The schema represents a single extracted record as TypeScript would model it.
+Return ONLY a valid JSON object (no markdown, no explanation). Use camelCase field names. Include all fields the script should extract.
+Example fields: title, url, price, description, imageUrl, date, author, rating, category, etc.
+Choose only fields that are relevant to this specific website and instructions.`;
 
     const schemaRaw = await chatCompletion(modelId, [
       { role: "user", content: schemaPrompt },
@@ -129,20 +130,23 @@ Choose fields that are actually relevant to this specific website.`;
       detail: "Optimising instructions for maximum accuracy…",
     });
 
-    const refinePrompt = `You are an expert prompt engineer for web scraping. Refine this scraping request into a precise, technical specification.
+    const refinePrompt = `You are a senior TypeScript developer specialising in web scraping. Your task is to write a precise technical specification for a scraper SCRIPT.
+
+The script — when executed by the user — must autonomously fetch all required data from the target website. The script itself does the fetching; the user just runs it.
 
 Original URL: ${websiteUrl}
 Original instructions: ${instructions}
-Identified schema: ${JSON.stringify(schema, null, 2)}
+Identified data schema: ${JSON.stringify(schema, null, 2)}
 
-Create a refined, detailed prompt that:
-1. Specifies exact data to extract with field-by-field detail
-2. Handles edge cases (missing data, dynamic content, pagination)
-3. Includes error handling requirements
-4. Specifies output format and validation rules
-5. Notes rate limiting and ethical scraping requirements
+Write a detailed technical specification (not JSON) covering:
+1. Exact data fields to extract, with notes on where each field lives in the HTML/DOM (element tags, class names, data attributes, aria labels)
+2. Navigation flow: starting URL, how to discover all pages/items (pagination, infinite scroll, link following)
+3. Handling of dynamic content: when to wait for network idle vs DOM events, specific selectors to wait for before extracting
+4. Error handling: retry logic, timeouts, graceful handling of missing fields
+5. Rate limiting: delay strategy between requests to avoid bans
+6. Output: how results should be structured and written (console JSON, file, etc.)
 
-Write the refined prompt as a clear technical specification (not JSON).`;
+This specification will be handed directly to the TypeScript code generator.`;
 
     const refinedPrompt = await chatCompletion(modelId, [
       { role: "user", content: refinePrompt },
@@ -173,29 +177,32 @@ Write the refined prompt as a clear technical specification (not JSON).`;
     const baseFile = generateApiFileTemplate(websiteUrl, schema, instructions, refinedPrompt);
 
     // Ask AI to enhance and customise the file
-    const enhancePrompt = `You are an expert TypeScript developer specialising in web scraping with Playwright.
+    const enhancePrompt = `You are a senior TypeScript developer. Your task is to write a complete, production-ready TypeScript SCRIPT that, when executed with \`npx ts-node scraper.ts\` or compiled and run with Node.js, will automatically fetch and extract all required data from the target website.
 
-Enhance this base scraper TypeScript file for the specific website and requirements:
+IMPORTANT: The script must do all the fetching itself — it navigates to the website, handles pagination, waits for content, extracts data, and outputs results. The user just runs the script.
 
 Website: ${websiteUrl}
 Instructions: ${instructions}
-Schema: ${JSON.stringify(schema, null, 2)}
+Data schema: ${JSON.stringify(schema, null, 2)}
+Technical specification:
+${refinedPrompt}
 
-Base file:
+Base script template to enhance:
 \`\`\`typescript
 ${baseFile}
 \`\`\`
 
-Return the COMPLETE enhanced TypeScript file. Improvements to make:
-1. Add specific CSS selectors for this website's likely HTML structure
-2. Handle pagination if relevant (multiple pages, infinite scroll)
-3. Add proper error handling and retry logic with exponential backoff
-4. Add rate limiting (delay between requests)
-5. Add data validation and cleaning
-6. Add TypeScript types that match the schema exactly
-7. Keep all existing comments and structure, just enhance them
+Requirements for the enhanced script:
+1. Replace the generic CSS selectors in the base template with accurate, site-specific selectors inferred from the website type and schema
+2. Implement the correct pagination strategy (numbered pages, infinite scroll detection, "load more" button clicking, or API cursor)
+3. Add proper waits for dynamic content (waitForSelector, waitForNetworkIdle, etc.) before extracting data
+4. Implement retry logic with exponential backoff for failed requests
+5. Add configurable delay between page loads (default 1–2 seconds) to be respectful
+6. Add full TypeScript types matching the schema exactly
+7. Output extracted data as formatted JSON to stdout so results can be piped or redirected
+8. Keep all existing comments and class structure — just enhance the implementation
 
-Return ONLY the TypeScript code, no markdown fences.`;
+Return ONLY the complete TypeScript source code with no markdown fences.`;
 
     let apiFileContent = baseFile;
     const streamParts: string[] = [];

@@ -6,8 +6,10 @@ import {
   createSession,
   getSession,
   listSessions,
+  getUserDailyUsage,
+  incrementUserDailyUsage,
 } from "../services/supabaseService.js";
-import { requireOwner, requireAuth } from "./auth.js";
+import { requireAuth } from "./auth.js";
 
 const router = Router();
 
@@ -19,7 +21,7 @@ const StartSessionSchema = z.object({
 });
 
 // POST /api/scraper/start — creates DB session + streams agent via SSE
-router.post("/start", requireOwner, async (req: Request, res: Response): Promise<void> => {
+router.post("/start", requireAuth, async (req: Request, res: Response): Promise<void> => {
   const parse = StartSessionSchema.safeParse(req.body);
   if (!parse.success) {
     res.status(400).json({ error: parse.error.flatten() });
@@ -28,6 +30,21 @@ router.post("/start", requireOwner, async (req: Request, res: Response): Promise
 
   const { websiteUrl, instructions, modelId } = parse.data;
   const userId = (req as Request & { userId: string }).userId;
+
+  // ── Per-user daily rate limiting ──────────────────────────────────────────
+  const usage = await getUserDailyUsage(userId);
+  if (!usage.isOwner && usage.used >= usage.limit) {
+    res.status(429).json({
+      error: `Daily limit reached. You have used ${usage.used}/${usage.limit} prompt${usage.limit !== 1 ? "s" : ""} today. Upgrade your account for unlimited access.`,
+      usage,
+    });
+    return;
+  }
+
+  // Increment usage before running (prevents concurrent abuse)
+  if (!usage.isOwner) {
+    await incrementUserDailyUsage(userId);
+  }
 
   // Set SSE headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -71,7 +88,7 @@ const QuickSchemaSchema = z.object({
   modelId: z.string().min(1),
 });
 
-router.post("/schema", requireOwner, async (req: Request, res: Response): Promise<void> => {
+router.post("/schema", requireAuth, async (req: Request, res: Response): Promise<void> => {
   const parse = QuickSchemaSchema.safeParse(req.body);
   if (!parse.success) {
     res.status(400).json({ error: parse.error.flatten() });
@@ -95,6 +112,13 @@ Return ONLY valid JSON object representing one scraped record. No explanation, n
     const message = err instanceof Error ? err.message : "AI call failed";
     res.status(500).json({ error: message });
   }
+});
+
+// GET /api/scraper/usage — get current user's daily usage
+router.get("/usage", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const userId = (req as Request & { userId: string }).userId;
+  const usage = await getUserDailyUsage(userId);
+  res.json({ usage });
 });
 
 export default router;

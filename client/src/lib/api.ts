@@ -1,4 +1,4 @@
-import type { ModelOption } from "../types";
+import type { ModelOption, Team, TeamMember, DailyUsage } from "../types";
 
 const BASE = "/api";
 
@@ -14,6 +14,87 @@ export async function fetchModels(): Promise<{
 export async function fetchHealth(): Promise<{ status: string }> {
   const res = await fetch(`${BASE}/health`);
   return res.json();
+}
+
+export async function fetchUsage(token: string): Promise<{ usage: DailyUsage }> {
+  const res = await fetch(`${BASE}/scraper/usage`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch usage");
+  return res.json();
+}
+
+// ─── Teams API ────────────────────────────────────────────────────────────────
+
+export async function fetchTeams(token: string): Promise<Team[]> {
+  const res = await fetch(`${BASE}/teams`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch teams");
+  const data = await res.json();
+  return data.teams;
+}
+
+export async function createTeam(name: string, token: string): Promise<Team> {
+  const res = await fetch(`${BASE}/teams`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "Failed to create team" }));
+    throw new Error(err.error ?? "Failed to create team");
+  }
+  const data = await res.json();
+  return data.team;
+}
+
+export async function deleteTeam(teamId: string, token: string): Promise<void> {
+  const res = await fetch(`${BASE}/teams/${teamId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to delete team");
+}
+
+export async function fetchTeamMembers(teamId: string, token: string): Promise<TeamMember[]> {
+  const res = await fetch(`${BASE}/teams/${teamId}/members`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch team members");
+  const data = await res.json();
+  return data.members;
+}
+
+export async function addTeamMember(
+  teamId: string,
+  email: string,
+  role: "editor" | "viewer",
+  token: string
+): Promise<TeamMember> {
+  const res = await fetch(`${BASE}/teams/${teamId}/members`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ email, role }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: "Failed to add member" }));
+    throw new Error(err.error ?? "Failed to add member");
+  }
+  const data = await res.json();
+  return data.member;
+}
+
+export async function removeTeamMember(
+  teamId: string,
+  memberId: string,
+  token: string
+): Promise<void> {
+  const res = await fetch(`${BASE}/teams/${teamId}/members/${memberId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to remove member");
 }
 
 export function startAgentSession(
