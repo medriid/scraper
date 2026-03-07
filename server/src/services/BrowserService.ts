@@ -53,8 +53,12 @@ function isBrowserNotInstalledError(err: unknown): boolean {
 
 // ─── HTTP fallback ────────────────────────────────────────────────────────────
 
-function httpFetch(targetUrl: string): Promise<string> {
+function httpFetch(targetUrl: string, redirectsLeft = 5): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (redirectsLeft <= 0) {
+      reject(new Error("Too many HTTP redirects"));
+      return;
+    }
     const parsedUrl = new URL(targetUrl);
     const transport = parsedUrl.protocol === "https:" ? https : http;
     const ua = pickRandom(USER_AGENTS);
@@ -71,13 +75,22 @@ function httpFetch(targetUrl: string): Promise<string> {
       },
       (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          httpFetch(new URL(res.headers.location, targetUrl).href).then(resolve).catch(reject);
+          httpFetch(new URL(res.headers.location, targetUrl).href, redirectsLeft - 1).then(resolve).catch(reject);
           res.resume();
           return;
         }
+        const MAX_BODY = 512_000;
         const chunks: Buffer[] = [];
-        res.on("data", (c: Buffer) => chunks.push(c));
-        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8").slice(0, 512_000)));
+        let totalSize = 0;
+        res.on("data", (c: Buffer) => {
+          totalSize += c.length;
+          if (totalSize <= MAX_BODY) chunks.push(c);
+          else if (totalSize - c.length < MAX_BODY) {
+            // Push only the remaining portion up to the limit
+            chunks.push(c.subarray(0, MAX_BODY - (totalSize - c.length)));
+          }
+        });
+        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
         res.on("error", reject);
       }
     );

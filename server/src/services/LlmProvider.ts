@@ -267,6 +267,6 @@ export async function exeChat(
   return cascadeChat(plan[role], messages, role === "extractor" ? 0.1 : 0.2, maxTokens);
 }
 
-// Keep pickAvailable exported for tests / diagnostics
-export { pickAvailable };
+
+// ─── Internal helpers (not exported) ─────────────────────────────────────────
 

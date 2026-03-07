@@ -522,7 +522,7 @@ async function geminiChat(
   }
   console.warn(`[aiService] All Gemini keys exhausted`);
   throw new ProviderExhaustedError("Gemini");
-  void lastError;
+
 }
 
 async function* geminiStream(
@@ -562,7 +562,7 @@ async function* geminiStream(
   }
   console.warn(`[aiService] All Gemini keys exhausted (stream)`);
   throw new ProviderExhaustedError("Gemini");
-  void lastError;
+
 }
 
 // ─── OpenRouter implementation ────────────────────────────────────────────────
@@ -598,7 +598,7 @@ async function openrouterChat(
   }
   console.warn(`[aiService] All OpenRouter keys exhausted`);
   throw new ProviderExhaustedError("OpenRouter");
-  void lastError;
+
 }
 
 async function* openrouterStream(
@@ -637,7 +637,7 @@ async function* openrouterStream(
   }
   console.warn(`[aiService] All OpenRouter keys exhausted (stream)`);
   throw new ProviderExhaustedError("OpenRouter");
-  void lastError;
+
 }
 
 // ─── Groq implementation ──────────────────────────────────────────────────────
@@ -673,7 +673,7 @@ async function groqChat(
   }
   console.warn(`[aiService] All Groq keys exhausted`);
   throw new ProviderExhaustedError("Groq");
-  void lastError;
+
 }
 
 async function* groqStream(
@@ -712,6 +712,6 @@ async function* groqStream(
   }
   console.warn(`[aiService] All Groq keys exhausted (stream)`);
   throw new ProviderExhaustedError("Groq");
-  void lastError;
+
 }
 
