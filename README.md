@@ -116,35 +116,44 @@ Owners have unlimited daily prompts and full access to all features.
 
 ---
 
-## Setting Up Google Sign-In
+## Setting Up Social Sign-In (OAuth)
 
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/) → **APIs & Services → Credentials**.
-2. Create a new **OAuth 2.0 Client ID** (Web application).
-3. Under **Authorized redirect URIs**, add:
+Scrapex uses [Supabase Auth](https://supabase.com/docs/guides/auth) with OAuth for social sign-in. When a user clicks **Sign in with Google** or **Sign in with GitHub**, Supabase handles the entire OAuth exchange — your app calls `signInWithOAuth()`, the user authenticates with the provider, and Supabase redirects them back with an active session.
+
+### How it works
+
+1. Your app calls `supabase.auth.signInWithOAuth({ provider: 'google' })` (or `'github'`).
+2. The user is redirected to the provider's consent screen.
+3. After approval, the provider redirects to your **Supabase project's callback URL** (`https://<project-ref>.supabase.co/auth/v1/callback`).
+4. Supabase verifies the authorization code, creates or updates the user, and redirects back to your app's origin (`window.location.origin`) with an active session.
+
+You never handle OAuth tokens directly — Supabase manages the full flow.
+
+### Google Sign-In
+
+1. Go to the [Google Auth Platform console](https://console.cloud.google.com/auth/clients) and [create a new OAuth client ID](https://console.cloud.google.com/auth/clients/create) → choose **Web application**.
+2. Under **Authorized JavaScript origins**, add your app's URL (e.g. `https://yourapp.herokuapp.com`). For local development, also add `http://localhost:5173`.
+3. Under **Authorized redirect URIs**, add your Supabase callback URL:
    ```
    https://<your-supabase-project-ref>.supabase.co/auth/v1/callback
    ```
+   You can find this URL in your Supabase dashboard → **Authentication → Providers → Google**.
 4. Copy the **Client ID** and **Client Secret**.
-5. In your Supabase dashboard → **Authentication → Providers → Google**, enable it and paste your Client ID and Client Secret.
-6. Save — Google sign-in is now active.
+5. In your Supabase dashboard → **Authentication → Providers → Google**, toggle it on and paste the Client ID and Client Secret.
 
-> The OAuth redirect URI is your **Supabase project URL** + `/auth/v1/callback`. Supabase handles the OAuth exchange; you do not need to add any callback URL to your own server.
+> **Tip:** Configure your app's [Branding](https://console.cloud.google.com/auth/branding) in the Google Auth Platform console so users see your app name and logo instead of a project ID during sign-in.
 
----
-
-## Setting Up GitHub Sign-In
+### GitHub Sign-In
 
 1. Go to [github.com/settings/developers](https://github.com/settings/developers) → **OAuth Apps → New OAuth App**.
 2. Set **Homepage URL** to your app URL (e.g. `https://yourapp.herokuapp.com`).
-3. Set **Authorization callback URL** to:
+3. Set **Authorization callback URL** to your Supabase callback URL:
    ```
    https://<your-supabase-project-ref>.supabase.co/auth/v1/callback
    ```
-   This is the **GitHub OAuth callback URL** — it points to Supabase, which handles the token exchange and then redirects back to your app.
-4. Copy the **Client ID** and generate a **Client Secret**.
-5. In your Supabase dashboard → **Authentication → Providers → GitHub**, enable it and paste your Client ID and Client Secret.
-
-> **What is the GitHub OAuth callback URL?** It is the URL GitHub redirects to after the user approves access. For Supabase-managed OAuth, this is always your Supabase project's auth endpoint (`/auth/v1/callback`). Supabase verifies the code, creates/updates the user session, and redirects back to your app's `redirectTo` URL (by default `window.location.origin`).
+   You can find this URL in your Supabase dashboard → **Authentication → Providers → GitHub**.
+4. Click **Register Application**, then copy the **Client ID** and generate a **Client Secret**.
+5. In your Supabase dashboard → **Authentication → Providers → GitHub**, toggle it on and paste the Client ID and Client Secret.
 
 ---
 

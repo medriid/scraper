@@ -12,6 +12,8 @@ import {
   ChevronRight,
   Users,
   AlertCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import { fetchModels, fetchUsage } from "./lib/api";
 import { startAgentSession } from "./lib/api";
@@ -78,6 +80,7 @@ function AppContent() {
   const [gateAuthOpen, setGateAuthOpen] = useState(false);
   const [prefillConfig, setPrefillConfig] = useState<Partial<SessionConfig> | null>(null);
   const [usage, setUsage] = useState<DailyUsage | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const { user, profile, signOut, session, loading } = useAuth();
   const { theme, setTheme } = useTheme();
   const supabaseEnabled = supabase !== null;
@@ -244,7 +247,15 @@ function AppContent() {
   return (
     <div className="dashboard">
       {/* ── Sidebar ─────────────────────────────────────────────────── */}
-      <aside className="sidebar">
+      <AnimatePresence initial={false}>
+        {!sidebarCollapsed && (
+          <motion.aside
+            className="sidebar"
+            initial={{ width: 0, minWidth: 0, opacity: 0 }}
+            animate={{ width: 220, minWidth: 220, opacity: 1 }}
+            exit={{ width: 0, minWidth: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: "easeInOut" }}
+          >
         <div className="sidebar-logo">
           <button
             className="sidebar-logo-btn"
@@ -336,12 +347,23 @@ function AppContent() {
             </div>
           )}
         </div>
-      </aside>
+          </motion.aside>
+        )}
+      </AnimatePresence>
 
       {/* ── Main content ────────────────────────────────────────────── */}
       <div className="dashboard-main">
         <div className="dashboard-topbar">
-          <div className="dashboard-topbar-title">{TAB_LABELS[sidebarTab]}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button
+              className="sidebar-toggle"
+              onClick={() => setSidebarCollapsed((c) => !c)}
+              title={sidebarCollapsed ? "Open sidebar" : "Collapse sidebar"}
+            >
+              {sidebarCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+            </button>
+            <div className="dashboard-topbar-title">{TAB_LABELS[sidebarTab]}</div>
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             {appStep !== "config" && sidebarTab === "session" && (
               <button
