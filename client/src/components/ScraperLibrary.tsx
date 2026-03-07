@@ -182,11 +182,14 @@ export default function ScraperLibrary({ token, onRerun }: Props) {
                           className="btn btn-secondary"
                           style={{ fontSize: "0.82rem", gap: 6, padding: "7px 14px" }}
                           onClick={() => {
-                            const blob = new Blob([s.generated_api_file!], { type: "text/plain" });
+                            const code = s.generated_api_file!;
+                            const isPy = code.trimStart().startsWith("import json") || code.trimStart().startsWith("from ");
+                            const ext = isPy ? "py" : "ts";
+                            const blob = new Blob([code], { type: "text/plain" });
                             const url = URL.createObjectURL(blob);
                             const a = document.createElement("a");
                             a.href = url;
-                            a.download = `scraper-${new Date(s.created_at).toISOString().slice(0, 10)}.ts`;
+                            a.download = `scraper-${new Date(s.created_at).toISOString().slice(0, 10)}.${ext}`;
                             a.click();
                             URL.revokeObjectURL(url);
                           }}

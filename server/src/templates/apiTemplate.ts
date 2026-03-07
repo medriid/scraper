@@ -397,7 +397,7 @@ function inferTsType(value: unknown): string {
 function inferPyType(value: unknown): string {
   if (value === null || value === undefined) return "str";
   if (typeof value === "boolean") return "bool";
-  if (typeof value === "number") return "float" ;
+  if (typeof value === "number") return "float";
   if (Array.isArray(value)) {
     if (value.length === 0) return "list[str]";
     return `list[${inferPyType(value[0])}]`;
