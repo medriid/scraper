@@ -201,6 +201,8 @@ router.get("/crawl/:jobId", requireAuth, async (req: Request, res: Response): Pr
 
     let lastStepIdx = 0;
     let lastChunkIdx = 0;
+    let lastStatus = "";
+    let lastProgress = -1;
 
     const poll = setInterval(() => {
       // Send new steps
@@ -213,8 +215,12 @@ router.get("/crawl/:jobId", requireAuth, async (req: Request, res: Response): Pr
         res.write(`event: code_chunk\ndata: ${JSON.stringify({ chunk: job.codeChunks[lastChunkIdx] })}\n\n`);
         lastChunkIdx++;
       }
-      // Send status
-      res.write(`event: status\ndata: ${JSON.stringify({ status: job.status, progress: job.progress })}\n\n`);
+      // Send status only when it changes
+      if (job.status !== lastStatus || job.progress !== lastProgress) {
+        res.write(`event: status\ndata: ${JSON.stringify({ status: job.status, progress: job.progress })}\n\n`);
+        lastStatus = job.status;
+        lastProgress = job.progress;
+      }
 
       if (job.status === "completed" || job.status === "failed") {
         if (job.status === "completed") {

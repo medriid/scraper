@@ -148,7 +148,7 @@ export async function runAgentSession(
   let discoveredApis: Array<{ url: string; method: string; sampleData: string }> = [];
   let schema: Record<string, unknown> | null = null;
   let analysis = "";
-  let crawlStats = { pages: 0, tokens: 0, apis: 0 };
+  let crawlSummary = { pages: 0, tokens: 0, apis: 0 };
 
   try {
     // ── Phase 1: Crawl & Discover ───────────────────────────────────────────
@@ -168,7 +168,7 @@ export async function runAgentSession(
       { maxPages: 6, maxDepth: 2, autoExplore: true }
     );
 
-    crawlStats = {
+    crawlSummary = {
       pages: crawlResult.pages.length,
       tokens: crawlResult.totalTokens,
       apis: crawlResult.siteMap.apiEndpoints.length,
@@ -179,7 +179,7 @@ export async function runAgentSession(
     emit({
       type: "crawling",
       message: `Discovery complete`,
-      detail: `${crawlStats.pages} page(s) · ${crawlStats.tokens.toLocaleString()} tokens · ${crawlStats.apis} API(s)`,
+      detail: `${crawlSummary.pages} page(s) · ${crawlSummary.tokens.toLocaleString()} tokens · ${crawlSummary.apis} API(s)`,
     });
 
     await sleep(200);
@@ -396,7 +396,7 @@ Write the COMPLETE file now:`;
     emit({
       type: "complete",
       message: `${isDataApi ? "Data API extractor" : "Web scraper"} ready`,
-      detail: `${apiFileContent.split("\n").length} lines · ${crawlStats.pages} pages crawled · ${crawlStats.apis} APIs discovered`,
+      detail: `${apiFileContent.split("\n").length} lines · ${crawlSummary.pages} pages crawled · ${crawlSummary.apis} APIs discovered`,
       data: {
         apiFile: apiFileContent,
         schema,

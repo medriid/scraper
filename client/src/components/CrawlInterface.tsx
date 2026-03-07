@@ -24,8 +24,6 @@ interface Props {
   onCancel?: () => void;
 }
 
-const EXE_MODELS = ["exe-pro-1", "exe-light-1"];
-
 export default function CrawlInterface({
   models,
   keyStatus,
@@ -101,11 +99,10 @@ export default function CrawlInterface({
     }
   }
 
-  // Derive selected model info
-  const allModels = models;
-  const exeModels = allModels.filter((m) => EXE_MODELS.includes(m.id));
-  const otherModels = allModels.filter((m) => !EXE_MODELS.includes(m.id));
-  const selectedModelInfo = allModels.find((m) => m.id === selectedModel);
+  // Derive exe models from the API response (provider === "exe"), falling back to id prefix
+  const exeModels = models.filter((m) => m.provider === "exe" || m.id.startsWith("exe-"));
+  const otherModels = models.filter((m) => m.provider !== "exe" && !m.id.startsWith("exe-"));
+  const selectedModelInfo = models.find((m) => m.id === selectedModel);
 
   const canSubmit =
     !disabled &&

@@ -40,14 +40,15 @@ interface HtmlNode {
 }
 
 function unescapeHtml(str: string): string {
+  // Decode named entities; &amp; must go last to avoid double-unescaping
   return str
-    .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&nbsp;/g, " ")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)));
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+    .replace(/&amp;/g, "&");
 }
 
 function parseAttrs(attrStr: string): Record<string, string> {
@@ -61,16 +62,59 @@ function parseAttrs(attrStr: string): Record<string, string> {
 }
 
 /**
+ * Remove all HTML comments and dangerous tags in a single pass using a state machine.
+ * This avoids CodeQL's incomplete-multi-character-sanitization warnings that arise from
+ * sequential regex chains, since the distilled text is used only as LLM input (never
+ * rendered as HTML). The state machine handles both closed and unclosed constructs.
+ */
+function stripDangerousHtml(html: string): string {
+  const DANGEROUS = /^(script|style|noscript|iframe|svg|head)$/i;
+  let out = "";
+  let i = 0;
+  const n = html.length;
+
+  while (i < n) {
+    // HTML comment
+    if (html[i] === "<" && html[i + 1] === "!" && html[i + 2] === "-" && html[i + 3] === "-") {
+      // Skip until --> or end of string
+      const end = html.indexOf("-->", i + 4);
+      i = end === -1 ? n : end + 3;
+      continue;
+    }
+    // DOCTYPE
+    if (html[i] === "<" && html[i + 1] === "!") {
+      const end = html.indexOf(">", i + 2);
+      i = end === -1 ? n : end + 1;
+      continue;
+    }
+    // Potential tag
+    if (html[i] === "<") {
+      // Read tag name
+      let j = i + 1;
+      if (j < n && html[j] === "/") j++;
+      const nameStart = j;
+      while (j < n && /[\w]/.test(html[j])) j++;
+      const tagName = html.slice(nameStart, j);
+      if (DANGEROUS.test(tagName)) {
+        // Skip entire element content — find the matching close tag or end
+        const closeTag = new RegExp(`<\\s*\\/\\s*${tagName}\\s*>`, "gi");
+        closeTag.lastIndex = i;
+        const match = closeTag.exec(html);
+        i = match ? match.index + match[0].length : n;
+        continue;
+      }
+    }
+    out += html[i++];
+  }
+  return out;
+}
+
+/**
  * Convert HTML to clean semantic Markdown.
+ * The distilled output is only used as LLM text input — it is never rendered as HTML.
  */
 export function distillHtml(html: string): string {
-  // Quick pre-clean: remove doctype, comments
-  const cleaned = html
-    .replace(/<!DOCTYPE[^>]*>/gi, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<\s*head\b[\s\S]*?<\/head\s*>/gi, "")
-    .replace(/<\s*(script|style|noscript|iframe|svg)[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
-    .trim();
+  const cleaned = stripDangerousHtml(html).trim();
 
   const md = htmlToMarkdown(cleaned);
 
@@ -193,7 +237,7 @@ export function estimateTokens(text: string): number {
 
 // ─── Text chunker ─────────────────────────────────────────────────────────────
 
-const MAX_CHUNK_TOKENS = 8000;
+const MAX_CHUNK_TOKENS = 10000;
 
 /**
  * Splits markdown text into chunks of ≤ maxTokens tokens,
