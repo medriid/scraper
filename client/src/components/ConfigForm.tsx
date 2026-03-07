@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Globe, Cpu, ChevronRight } from "lucide-react";
-import type { ModelOption, SessionConfig } from "../types";
+import { Globe, Cpu, ChevronRight, FileCode } from "lucide-react";
+import type { ModelOption, SessionConfig, OutputLanguage } from "../types";
 
 interface Props {
   models: ModelOption[];
@@ -25,6 +25,9 @@ export default function ConfigForm({ models, keyStatus, onStart, prefill, disabl
   const [selectedModel, setSelectedModel] = useState<string>(
     prefill?.modelId ?? "gemini-2.0-flash"
   );
+  const [language, setLanguage] = useState<OutputLanguage>(
+    prefill?.language ?? "typescript"
+  );
   const [urlError, setUrlError] = useState("");
 
   // Sync when prefill changes (e.g. switching back to session tab after "Run again").
@@ -35,6 +38,7 @@ export default function ConfigForm({ models, keyStatus, onStart, prefill, disabl
     if (prefill.websiteUrl) setWebsiteUrl(prefill.websiteUrl);
     if (prefill.instructions) setInstructions(prefill.instructions);
     if (prefill.modelId) setSelectedModel(prefill.modelId);
+    if (prefill.language) setLanguage(prefill.language);
   }, [prefill]);
 
   // Group models by provider
@@ -71,6 +75,7 @@ export default function ConfigForm({ models, keyStatus, onStart, prefill, disabl
       websiteUrl: url,
       instructions: instructions.trim(),
       modelId: selectedModel,
+      language,
     });
   }
 
@@ -114,6 +119,46 @@ export default function ConfigForm({ models, keyStatus, onStart, prefill, disabl
           <span style={{ fontSize: "0.75rem", color: "var(--text-4)" }}>
             Be specific — describe the data fields, pagination, filters, etc.
           </span>
+        </div>
+      </div>
+
+      {/* Output language */}
+      <div className="panel">
+        <div className="panel-header">
+          <div className="panel-icon"><FileCode size={15} /></div>
+          <div>
+            <div className="panel-title">Output Language</div>
+            <div className="panel-subtitle">Choose the language for the generated scraper</div>
+          </div>
+        </div>
+
+        <div className="model-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
+          <motion.div
+            className={`model-card ${language === "typescript" ? "model-card--selected" : ""}`}
+            onClick={() => setLanguage("typescript")}
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.99 }}
+            transition={{ duration: 0.1 }}
+          >
+            <div className="model-card-name">TypeScript</div>
+            <div className="model-card-desc">Playwright + Node.js</div>
+            <div style={{ marginTop: 6 }}>
+              <span className="model-card-badge badge-provider">.ts</span>
+            </div>
+          </motion.div>
+          <motion.div
+            className={`model-card ${language === "python" ? "model-card--selected" : ""}`}
+            onClick={() => setLanguage("python")}
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.99 }}
+            transition={{ duration: 0.1 }}
+          >
+            <div className="model-card-name">Python</div>
+            <div className="model-card-desc">Playwright + Python</div>
+            <div style={{ marginTop: 6 }}>
+              <span className="model-card-badge badge-provider">.py</span>
+            </div>
+          </motion.div>
         </div>
       </div>
 

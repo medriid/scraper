@@ -129,6 +129,7 @@ function AppContent() {
       cfg.websiteUrl,
       cfg.instructions,
       cfg.modelId,
+      cfg.language,
       (step) => {
         setSteps((prev) => [...prev, step]);
         if (step.type === "complete" && step.data) {
@@ -403,13 +404,13 @@ function AppContent() {
                         Agentic Scraper Generation
                       </div>
                       <h1>
-                        Generate a TypeScript
+                        Generate a scraper
                         <br />
-                        scraper in seconds
+                        in seconds
                       </h1>
                       <p>
                         Give the AI a URL and instructions. It will analyse the site, design a data
-                        schema, and write a production-ready TypeScript script you can run locally
+                        schema, and write a production-ready scraper script you can run locally
                         to fetch all the data you need.
                       </p>
                       {!isOwner && usage && usage.used >= usage.limit && (
@@ -476,6 +477,7 @@ function AppContent() {
                         error={error}
                         codeStream={codeChunks}
                         onReset={handleReset}
+                        language={config?.language ?? "typescript"}
                       />
                       <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end" }}>
                         <button
