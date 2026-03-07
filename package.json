@@ -7,7 +7,7 @@
     "start": "node server/dist/migrate.js && node server/dist/index.js",
     "migrate": "node server/dist/migrate.js",
     "dev": "concurrently \"npm run dev --workspace=server\" \"npm run dev --workspace=client\"",
-    "heroku-postbuild": "npm run build && npx playwright install chromium --with-deps"
+    "heroku-postbuild": "npm run build && npx playwright install chromium"
   },
   "workspaces": [
     "client",
@@ -17,6 +17,6 @@
     "concurrently": "^9.1.2"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": "20.x"
   }
 }
