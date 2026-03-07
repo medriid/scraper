@@ -60,7 +60,7 @@ const STEP_LABELS: Record<string, string> = {
   error: "Error",
 };
 
-const PHASE_STEPS = ["fetching", "browsing", "analyzing", "discovering", "crawling", "refining", "testing", "building", "generating"] as const;
+const PHASE_STEPS = ["fetching", "browsing", "analyzing", "crawling", "thinking", "refining", "building", "generating"] as const;
 
 export default function AgentSession({ config, steps, codeStream, phase, onCancel }: Props) {
   const stepsEndRef = useRef<HTMLDivElement>(null);
