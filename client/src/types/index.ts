@@ -15,6 +15,7 @@ export interface AgentStep {
     | "fetching"
     | "analyzing"
     | "discovering"
+    | "crawling"
     | "generating"
     | "refining"
     | "testing"

@@ -15,6 +15,7 @@ import {
   Radar,
   FlaskConical,
   ShieldCheck,
+  Network,
 } from "lucide-react";
 import type { AgentStep, SessionConfig, SessionPhase } from "../types";
 import CodePreview from "./CodePreview";
@@ -33,6 +34,7 @@ const STEP_ICONS: Record<string, React.ReactNode> = {
   fetching: <Download size={13} />,
   analyzing: <Search size={13} />,
   discovering: <Radar size={13} />,
+  crawling: <Network size={13} />,
   refining: <Wand2 size={13} />,
   testing: <FlaskConical size={13} />,
   validating: <ShieldCheck size={13} />,
@@ -48,6 +50,7 @@ const STEP_LABELS: Record<string, string> = {
   fetching: "Fetching",
   analyzing: "Analyzing",
   discovering: "Discovering",
+  crawling: "Crawling",
   refining: "Refining",
   testing: "Testing",
   validating: "Validating",
@@ -57,7 +60,7 @@ const STEP_LABELS: Record<string, string> = {
   error: "Error",
 };
 
-const PHASE_STEPS = ["fetching", "browsing", "analyzing", "discovering", "refining", "testing", "building", "generating"] as const;
+const PHASE_STEPS = ["fetching", "browsing", "analyzing", "discovering", "crawling", "refining", "testing", "building", "generating"] as const;
 
 export default function AgentSession({ config, steps, codeStream, phase, onCancel }: Props) {
   const stepsEndRef = useRef<HTMLDivElement>(null);
