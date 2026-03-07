@@ -124,9 +124,9 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Detect if generated code appears to be truncated.
- * Checks for unbalanced brackets/braces and common incomplete patterns.
+ * Checks for unbalanced brackets/braces - the most reliable indicator of truncation.
  */
-function isCodeTruncated(code: string, isTs: boolean): boolean {
+function isCodeTruncated(code: string): boolean {
   // Count balanced brackets
   let braces = 0;
   let brackets = 0;
@@ -167,41 +167,29 @@ function isCodeTruncated(code: string, isTs: boolean): boolean {
   // Check for common incomplete patterns
   const trimmed = code.trim();
   
-  // Ends with incomplete type annotation
-  if (trimmed.match(/:\s*(Record|Array|Map|Set|Promise|string|number|boolean|any)\s*$/)) {
+  // Ends with incomplete generic type annotation (Record<, Array<, etc.)
+  if (trimmed.match(/:\s*(Record|Array|Map|Set|Promise)<[^>]*$/)) {
     return true;
   }
 
-  // Ends mid-word or with incomplete statement
-  if (trimmed.match(/[a-zA-Z_]\s*$/)) {
+  // Ends with opening bracket/brace/paren only
+  if (trimmed.match(/[{[(]\s*$/)) {
     return true;
   }
 
-  // Ends with opening bracket or operator
-  if (trimmed.match(/[{[(,;:=<>|&+\-*/%]\s*$/)) {
+  // Ends with colon followed by nothing (incomplete type or object property)
+  if (trimmed.match(/:\s*$/)) {
     return true;
   }
 
-  // For TypeScript, check if interface/class/function is incomplete
-  if (isTs) {
-    // Missing closing brace for interface/class/function
-    const lastInterface = code.lastIndexOf("interface ");
-    const lastClass = code.lastIndexOf("class ");
-    const lastFunction = code.lastIndexOf("function ");
-    const lastArrow = code.lastIndexOf("=>");
-    
-    // If we have an interface/class/function but no proper ending
-    if ((lastInterface > 0 || lastClass > 0 || lastFunction > 0) && !trimmed.endsWith("}")) {
-      // Count braces after the last declaration
-      const lastDecl = Math.max(lastInterface, lastClass, lastFunction);
-      const afterDecl = code.slice(lastDecl);
-      let count = 0;
-      for (const c of afterDecl) {
-        if (c === "{") count++;
-        else if (c === "}") count--;
-      }
-      if (count !== 0) return true;
-    }
+  // Ends with equals sign (incomplete assignment)
+  if (trimmed.match(/=\s*$/)) {
+    return true;
+  }
+
+  // Ends with arrow (incomplete arrow function body)
+  if (trimmed.match(/=>\s*$/)) {
+    return true;
   }
 
   return false;
@@ -475,7 +463,7 @@ Write the COMPLETE file now:`;
         .trim();
       if (enhanced.length > 500) {
         // Check for truncation before using the enhanced code
-        wasTruncated = isCodeTruncated(enhanced, isTs);
+        wasTruncated = isCodeTruncated(enhanced);
         apiFileContent = enhanced;
       }
     }
@@ -650,7 +638,7 @@ export async function runJobInBackground(jobId: string): Promise<void> {
         .replace(/\n?```\s*$/gm, "")
         .trim();
       if (enhanced.length > 500) {
-        wasTruncated = isCodeTruncated(enhanced, isTs);
+        wasTruncated = isCodeTruncated(enhanced);
         apiFileContent = enhanced;
       }
     } catch (err) {

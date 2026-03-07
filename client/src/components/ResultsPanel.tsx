@@ -50,7 +50,7 @@ export default function ResultsPanel({ result, error, codeStream, onReset, langu
       {/* Truncation warning */}
       {result?.wasTruncated && (
         <motion.div
-          className="warning-msg panel"
+          className="warning-msg panel truncation-warning"
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           style={{ 
@@ -62,7 +62,7 @@ export default function ResultsPanel({ result, error, codeStream, onReset, langu
             display: "flex",
             alignItems: "center",
             gap: "var(--space-sm)",
-            color: "rgb(234, 179, 8)",
+            color: "#eab308",
             fontSize: "0.85rem",
           }}
         >
