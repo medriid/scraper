@@ -11,6 +11,10 @@ import {
   XCircle,
   X,
   Loader2,
+  Download,
+  Radar,
+  FlaskConical,
+  ShieldCheck,
 } from "lucide-react";
 import type { AgentStep, SessionConfig, SessionPhase } from "../types";
 import CodePreview from "./CodePreview";
@@ -26,8 +30,12 @@ interface Props {
 const STEP_ICONS: Record<string, React.ReactNode> = {
   thinking: <Brain size={13} />,
   browsing: <Globe size={13} />,
+  fetching: <Download size={13} />,
   analyzing: <Search size={13} />,
+  discovering: <Radar size={13} />,
   refining: <Wand2 size={13} />,
+  testing: <FlaskConical size={13} />,
+  validating: <ShieldCheck size={13} />,
   building: <Hammer size={13} />,
   generating: <Code2 size={13} />,
   complete: <CheckCircle2 size={13} />,
@@ -37,15 +45,19 @@ const STEP_ICONS: Record<string, React.ReactNode> = {
 const STEP_LABELS: Record<string, string> = {
   thinking: "Thinking",
   browsing: "Browsing",
+  fetching: "Fetching",
   analyzing: "Analyzing",
+  discovering: "Discovering",
   refining: "Refining",
+  testing: "Testing",
+  validating: "Validating",
   building: "Building",
   generating: "Generating Code",
   complete: "Complete",
   error: "Error",
 };
 
-const PHASE_STEPS = ["browsing", "analyzing", "refining", "building", "generating"] as const;
+const PHASE_STEPS = ["fetching", "browsing", "analyzing", "discovering", "refining", "testing", "building", "generating"] as const;
 
 export default function AgentSession({ config, steps, codeStream, phase, onCancel }: Props) {
   const stepsEndRef = useRef<HTMLDivElement>(null);
@@ -182,12 +194,12 @@ export default function AgentSession({ config, steps, codeStream, phase, onCance
           >
             <div className="agent-code-header">
               <Code2 size={13} />
-              <span>scraper.ts</span>
+              <span>{config.extractionMode === "data_api" ? "data_api" : "scraper"}.{config.language === "python" ? "py" : "ts"}</span>
               {isRunning && <span className="agent-code-streaming">streaming…</span>}
             </div>
             <CodePreview
               code={codeStream}
-              filename="scraper.ts"
+              filename={`${config.extractionMode === "data_api" ? "data_api" : "scraper"}.${config.language === "python" ? "py" : "ts"}`}
               streaming={isRunning}
               maxHeight={380}
             />

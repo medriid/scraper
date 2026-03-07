@@ -12,9 +12,13 @@ export interface AgentStep {
   type:
     | "thinking"
     | "browsing"
+    | "fetching"
     | "analyzing"
+    | "discovering"
     | "generating"
     | "refining"
+    | "testing"
+    | "validating"
     | "building"
     | "complete"
     | "error";
@@ -25,6 +29,8 @@ export interface AgentStep {
     schema?: Record<string, unknown>;
     refinedPrompt?: string;
     apiFile?: string;
+    endpointCount?: number;
+    testResult?: string;
   };
 }
 
@@ -37,11 +43,22 @@ export type SessionPhase =
 
 export type OutputLanguage = "typescript" | "python";
 
+export type ExtractionMode = "scraper" | "data_api";
+
+export interface AuthCredentials {
+  email?: string;
+  password?: string;
+  token?: string;
+  cookies?: string;
+}
+
 export interface SessionConfig {
   websiteUrl: string;
   instructions: string;
   modelId: string;
   language: OutputLanguage;
+  extractionMode: ExtractionMode;
+  credentials?: AuthCredentials;
 }
 
 export interface SessionResult {

@@ -130,6 +130,8 @@ function AppContent() {
       cfg.instructions,
       cfg.modelId,
       cfg.language,
+      cfg.extractionMode,
+      cfg.credentials,
       (step) => {
         setSteps((prev) => [...prev, step]);
         if (step.type === "complete" && step.data) {
@@ -401,17 +403,17 @@ function AppContent() {
                     >
                       <div className="hero-badge">
                         <Zap size={10} />
-                        Agentic Scraper Generation
+                        Agentic Data Extraction
                       </div>
                       <h1>
-                        Generate a scraper
+                        Extract any data
                         <br />
-                        in seconds
+                        from any website
                       </h1>
                       <p>
-                        Give the AI a URL and instructions. It will analyse the site, design a data
-                        schema, and write a production-ready scraper script you can run locally
-                        to fetch all the data you need.
+                        Give the AI a URL and instructions. It fetches the real page, discovers
+                        API endpoints, analyzes the HTML structure, and generates a production-ready
+                        scraper — or an authenticated data extractor for user-specific data.
                       </p>
                       {!isOwner && usage && usage.used >= usage.limit && (
                         <div className="usage-limit-banner">

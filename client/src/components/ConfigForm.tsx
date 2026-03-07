@@ -1,15 +1,13 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Globe, Cpu, ChevronRight, FileCode } from "lucide-react";
-import type { ModelOption, SessionConfig, OutputLanguage } from "../types";
+import { Globe, Cpu, ChevronRight, FileCode, Shield, Key } from "lucide-react";
+import type { ModelOption, SessionConfig, OutputLanguage, ExtractionMode, AuthCredentials } from "../types";
 
 interface Props {
   models: ModelOption[];
   keyStatus: { gemini: number; openrouter: number; groq: number };
   onStart: (config: SessionConfig) => void;
-  /** Optional pre-filled values (e.g. from "Run again" in the Library) */
   prefill?: Partial<SessionConfig>;
-  /** Disable form when user has hit their daily limit */
   disabled?: boolean;
 }
 
@@ -28,17 +26,22 @@ export default function ConfigForm({ models, keyStatus, onStart, prefill, disabl
   const [language, setLanguage] = useState<OutputLanguage>(
     prefill?.language ?? "typescript"
   );
+  const [extractionMode, setExtractionMode] = useState<ExtractionMode>(
+    prefill?.extractionMode ?? "scraper"
+  );
+  const [credentials, setCredentials] = useState<AuthCredentials>(
+    prefill?.credentials ?? {}
+  );
   const [urlError, setUrlError] = useState("");
 
-  // Sync when prefill changes (e.g. switching back to session tab after "Run again").
-  // Use the whole `prefill` object as the dependency so all three fields are
-  // applied in a single effect run, avoiding staggered re-renders.
   useEffect(() => {
     if (!prefill) return;
     if (prefill.websiteUrl) setWebsiteUrl(prefill.websiteUrl);
     if (prefill.instructions) setInstructions(prefill.instructions);
     if (prefill.modelId) setSelectedModel(prefill.modelId);
     if (prefill.language) setLanguage(prefill.language);
+    if (prefill.extractionMode) setExtractionMode(prefill.extractionMode);
+    if (prefill.credentials) setCredentials(prefill.credentials);
   }, [prefill]);
 
   // Group models by provider
@@ -76,6 +79,8 @@ export default function ConfigForm({ models, keyStatus, onStart, prefill, disabl
       instructions: instructions.trim(),
       modelId: selectedModel,
       language,
+      extractionMode,
+      ...(extractionMode === "data_api" ? { credentials } : {}),
     });
   }
 
@@ -120,6 +125,112 @@ export default function ConfigForm({ models, keyStatus, onStart, prefill, disabl
             Be specific — describe the data fields, pagination, filters, etc.
           </span>
         </div>
+      </div>
+
+      {/* Extraction mode */}
+      <div className="panel">
+        <div className="panel-header">
+          <div className="panel-icon"><Shield size={15} /></div>
+          <div>
+            <div className="panel-title">Extraction Mode</div>
+            <div className="panel-subtitle">Choose between public scraping or authenticated data extraction</div>
+          </div>
+        </div>
+
+        <div className="model-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
+          <motion.div
+            className={`model-card ${extractionMode === "scraper" ? "model-card--selected" : ""}`}
+            onClick={() => setExtractionMode("scraper")}
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.99 }}
+            transition={{ duration: 0.1 }}
+          >
+            <div className="model-card-name">Scraper API</div>
+            <div className="model-card-desc">Extract public website data — articles, products, listings visible to all users</div>
+            <div style={{ marginTop: 6 }}>
+              <span className="model-card-badge badge-free">public</span>
+            </div>
+          </motion.div>
+          <motion.div
+            className={`model-card ${extractionMode === "data_api" ? "model-card--selected" : ""}`}
+            onClick={() => setExtractionMode("data_api")}
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.99 }}
+            transition={{ duration: 0.1 }}
+          >
+            <div className="model-card-name">Data API</div>
+            <div className="model-card-desc">Extract user-specific data — dashboards, profiles, settings requiring authentication</div>
+            <div style={{ marginTop: 6 }}>
+              <span className="model-card-badge badge-provider">auth</span>
+            </div>
+          </motion.div>
+        </div>
+
+        {extractionMode === "data_api" && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+            style={{ marginTop: "var(--space-md)" }}
+          >
+            <div style={{
+              padding: "var(--space-md)",
+              background: "var(--bg-3)",
+              borderRadius: "var(--radius)",
+              border: "1px solid var(--border)",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: "var(--space-sm)", fontSize: "0.78rem", color: "var(--text-3)" }}>
+                <Key size={12} />
+                <span>Authentication Credentials</span>
+              </div>
+              <p style={{ fontSize: "0.75rem", color: "var(--text-4)", marginBottom: "var(--space-md)", lineHeight: 1.5 }}>
+                Provide at least one: email/password for login-based auth, an API token, or session cookies. 
+                Credentials are used to generate the scraper code. The generated script reads them from environment variables at runtime.
+              </p>
+              <div className="form-group" style={{ marginBottom: "var(--space-sm)" }}>
+                <label className="form-label" style={{ fontSize: "0.75rem" }}>Email</label>
+                <input
+                  className="form-input"
+                  type="email"
+                  placeholder="user@example.com"
+                  value={credentials.email ?? ""}
+                  onChange={(e) => setCredentials((c) => ({ ...c, email: e.target.value }))}
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: "var(--space-sm)" }}>
+                <label className="form-label" style={{ fontSize: "0.75rem" }}>Password</label>
+                <input
+                  className="form-input"
+                  type="password"
+                  placeholder="••••••••"
+                  value={credentials.password ?? ""}
+                  onChange={(e) => setCredentials((c) => ({ ...c, password: e.target.value }))}
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: "var(--space-sm)" }}>
+                <label className="form-label" style={{ fontSize: "0.75rem" }}>API Token / Bearer Token</label>
+                <input
+                  className="form-input"
+                  type="text"
+                  placeholder="eyJhbGciOiJIUzI1NiIs..."
+                  value={credentials.token ?? ""}
+                  onChange={(e) => setCredentials((c) => ({ ...c, token: e.target.value }))}
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label" style={{ fontSize: "0.75rem" }}>Session Cookies</label>
+                <input
+                  className="form-input"
+                  type="text"
+                  placeholder="session_id=abc123; auth_token=xyz789"
+                  value={credentials.cookies ?? ""}
+                  onChange={(e) => setCredentials((c) => ({ ...c, cookies: e.target.value }))}
+                />
+              </div>
+            </div>
+          </motion.div>
+        )}
       </div>
 
       {/* Output language */}

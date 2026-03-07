@@ -407,3 +407,311 @@ function inferPyType(value: unknown): string {
   }
   return "str";
 }
+
+interface AuthCredentials {
+  email?: string;
+  password?: string;
+  token?: string;
+  cookies?: string;
+}
+
+export function generateDataApiTemplate(
+  websiteUrl: string,
+  schema: Record<string, unknown>,
+  instructions: string,
+  credentials?: AuthCredentials
+): string {
+  const schemaStr = JSON.stringify(schema, null, 2);
+  const hostname = (() => {
+    try {
+      return new URL(websiteUrl).hostname;
+    } catch {
+      return websiteUrl;
+    }
+  })();
+  const className = hostname
+    .replace(/[^a-zA-Z0-9]/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .split("_")
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join("");
+
+  return `import { chromium, Browser, Page } from "playwright";
+
+export interface ExtractedItem {
+${buildInterfaceFields(schema)}
+}
+
+interface AuthConfig {
+  email?: string;
+  password?: string;
+  token?: string;
+  cookies?: string;
+}
+
+const CONFIG = {
+  baseUrl: "${websiteUrl}",
+  requestDelay: 1500,
+  maxPages: 10,
+  headless: true,
+} as const;
+
+const AUTH: AuthConfig = {
+  email: process.env.AUTH_EMAIL ?? "",
+  password: process.env.AUTH_PASSWORD ?? "",
+  token: process.env.AUTH_TOKEN ?? "",
+  cookies: process.env.AUTH_COOKIES ?? "",
+};
+
+const SCHEMA_HINT = ${schemaStr} as const;
+
+export class ${className}DataApi {
+  private browser: Browser | null = null;
+  private page: Page | null = null;
+  private results: ExtractedItem[] = [];
+  private sessionToken: string | null = null;
+  private sessionCookies: string[] = [];
+
+  async init(): Promise<void> {
+    this.browser = await chromium.launch({
+      headless: CONFIG.headless,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+    const context = await this.browser.newContext({
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      viewport: { width: 1280, height: 900 },
+    });
+    this.page = await context.newPage();
+  }
+
+  async authenticate(): Promise<boolean> {
+    if (AUTH.token) {
+      this.sessionToken = AUTH.token;
+      return true;
+    }
+
+    if (AUTH.cookies) {
+      const cookieParts = AUTH.cookies.split(";").map((c) => {
+        const [name, ...rest] = c.trim().split("=");
+        return {
+          name: name.trim(),
+          value: rest.join("=").trim(),
+          domain: new URL(CONFIG.baseUrl).hostname,
+          path: "/",
+        };
+      });
+      await this.page!.context().addCookies(cookieParts);
+      return true;
+    }
+
+    if (AUTH.email && AUTH.password) {
+      console.log("[DataAPI] Authenticating via browser login…");
+      await this.page!.goto(CONFIG.baseUrl, { waitUntil: "networkidle", timeout: 30_000 });
+      return true;
+    }
+
+    console.error("[DataAPI] No authentication credentials provided");
+    return false;
+  }
+
+  private getHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "application/json",
+    };
+    if (this.sessionToken) {
+      headers["Authorization"] = \`Bearer \${this.sessionToken}\`;
+    }
+    if (this.sessionCookies.length > 0) {
+      headers["Cookie"] = this.sessionCookies.join("; ");
+    }
+    return headers;
+  }
+
+  async fetchData(): Promise<ExtractedItem[]> {
+    if (!this.page) throw new Error("Not initialized. Call init() first.");
+
+    const authenticated = await this.authenticate();
+    if (!authenticated) {
+      throw new Error("Authentication failed");
+    }
+
+    await this.page!.goto(CONFIG.baseUrl, { waitUntil: "networkidle", timeout: 30_000 });
+
+    const items = await this.page!.evaluate(() => {
+      return [] as Record<string, unknown>[];
+    });
+
+    this.results = items as ExtractedItem[];
+    return this.results;
+  }
+
+  async close(): Promise<void> {
+    await this.browser?.close();
+    this.browser = null;
+    this.page = null;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function main(): Promise<void> {
+  const api = new ${className}DataApi();
+  try {
+    await api.init();
+    const data = await api.fetchData();
+    console.log(JSON.stringify(data, null, 2));
+  } finally {
+    await api.close();
+  }
+}
+
+main().catch((err) => {
+  console.error("[DataAPI] Fatal error:", err);
+  process.exit(1);
+});
+`;
+}
+
+export function generateDataApiPyTemplate(
+  websiteUrl: string,
+  schema: Record<string, unknown>,
+  instructions: string,
+  credentials?: AuthCredentials
+): string {
+  const hostname = (() => {
+    try {
+      return new URL(websiteUrl).hostname;
+    } catch {
+      return websiteUrl;
+    }
+  })();
+  const className = hostname
+    .replace(/[^a-zA-Z0-9]/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .split("_")
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join("");
+
+  const fields = Object.entries(schema)
+    .map(([key, value]) => {
+      const pyType = inferPyType(value);
+      return `    ${key}: ${pyType}`;
+    })
+    .join("\n");
+
+  return `import json
+import os
+import time
+from dataclasses import dataclass, asdict
+from playwright.sync_api import sync_playwright, Page, Browser
+
+@dataclass
+class ExtractedItem:
+${fields || "    pass"}
+
+CONFIG = {
+    "base_url": "${websiteUrl}",
+    "request_delay": 1.5,
+    "max_pages": 10,
+    "headless": True,
+}
+
+AUTH = {
+    "email": os.environ.get("AUTH_EMAIL", ""),
+    "password": os.environ.get("AUTH_PASSWORD", ""),
+    "token": os.environ.get("AUTH_TOKEN", ""),
+    "cookies": os.environ.get("AUTH_COOKIES", ""),
+}
+
+
+class ${className}DataApi:
+    def __init__(self):
+        self.browser: Browser | None = None
+        self.page: Page | None = None
+        self.results: list[dict] = []
+        self.session_token: str | None = None
+        self.session_cookies: list[str] = []
+
+    def init(self):
+        pw = sync_playwright().start()
+        self.browser = pw.chromium.launch(
+            headless=CONFIG["headless"],
+            args=["--no-sandbox", "--disable-setuid-sandbox"],
+        )
+        context = self.browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 900},
+        )
+        self.page = context.new_page()
+
+    def authenticate(self) -> bool:
+        if AUTH["token"]:
+            self.session_token = AUTH["token"]
+            return True
+
+        if AUTH["cookies"]:
+            cookie_parts = []
+            for c in AUTH["cookies"].split(";"):
+                parts = c.strip().split("=", 1)
+                if len(parts) == 2:
+                    from urllib.parse import urlparse
+                    domain = urlparse(CONFIG["base_url"]).hostname
+                    cookie_parts.append({
+                        "name": parts[0].strip(),
+                        "value": parts[1].strip(),
+                        "domain": domain,
+                        "path": "/",
+                    })
+            self.page.context.add_cookies(cookie_parts)
+            return True
+
+        if AUTH["email"] and AUTH["password"]:
+            print("[DataAPI] Authenticating via browser login…")
+            self.page.goto(CONFIG["base_url"], wait_until="networkidle", timeout=30000)
+            return True
+
+        print("[DataAPI] No authentication credentials provided")
+        return False
+
+    def fetch_data(self) -> list[dict]:
+        if not self.page:
+            raise RuntimeError("Not initialized. Call init() first.")
+
+        if not self.authenticate():
+            raise RuntimeError("Authentication failed")
+
+        self.page.goto(CONFIG["base_url"], wait_until="networkidle", timeout=30000)
+
+        items = self.page.evaluate("() => []")
+        self.results = items
+        return self.results
+
+    def close(self):
+        if self.browser:
+            self.browser.close()
+            self.browser = None
+            self.page = None
+
+
+def main():
+    api = ${className}DataApi()
+    try:
+        api.init()
+        data = api.fetch_data()
+        print(json.dumps(data, indent=2, default=str))
+    finally:
+        api.close()
+
+
+if __name__ == "__main__":
+    main()
+`;
+}
