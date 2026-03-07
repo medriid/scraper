@@ -308,7 +308,7 @@ function AppContent() {
             <div className="sidebar-user">
               <div className="sidebar-user-avatar">
                 {profile?.avatar_url ? (
-                  <img src={profile.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                  <img src={profile.avatar_url} alt={profile.display_name ?? "User avatar"} style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
                 ) : (
                   <User size={13} />
                 )}

@@ -35,7 +35,7 @@ router.post("/start", requireAuth, async (req: Request, res: Response): Promise<
   const usage = await getUserDailyUsage(userId);
   if (!usage.isOwner && usage.used >= usage.limit) {
     res.status(429).json({
-      error: `Daily limit reached. You have used ${usage.used}/${usage.limit} prompt${usage.limit !== 1 ? "s" : ""} today. Upgrade your account for unlimited access.`,
+      error: `Daily limit reached. You have used ${usage.used}/${usage.limit} prompt${usage.limit !== 1 ? "s" : ""} today. Your limit resets at midnight UTC.`,
       usage,
     });
     return;

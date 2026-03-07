@@ -47,7 +47,7 @@ export async function runAgentSession(
 
     await sleep(400);
 
-    const analysisPrompt = `You are an expert web scraping engineer. Your job is to analyse a website and figure out how to write a TypeScript script that, when executed, will fetch and extract all the required data from that website.
+    const analysisPrompt = `You are an expert web scraping engineer. Your job is to analyse a website and figure out how to write a TypeScript Playwright script that, when executed, will fetch and extract all the required data from that website.
 
 Website URL: ${websiteUrl}
 User Instructions: ${instructions}
@@ -57,9 +57,9 @@ Analyse the website and provide:
 2. The likely HTML structure — repeating containers (cards, list items, table rows, article elements), key CSS selectors and data attributes that the scraper script should target
 3. Anti-scraping measures to handle in the script (rate limiting, JS rendering, CAPTCHAs, auth walls, etc.)
 4. Pagination strategy the script should implement (numbered pages, infinite scroll, "load more" button, cursor-based API, etc.)
-5. Whether the site uses server-side rendering or client-side rendering (important for deciding between fetch+parse vs Playwright)
+5. Whether the site uses server-side rendering or client-side rendering (important for deciding wait strategies in Playwright)
 
-Be specific and technical. The output of this analysis will be used to write a TypeScript scraper script.`;
+Be specific and technical. The output of this analysis will be used to write a Playwright TypeScript scraper script.`;
 
     emit({
       type: "thinking",

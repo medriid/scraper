@@ -342,7 +342,7 @@ export default function TeamsPanel({ token, userId }: Props) {
                   {members.map((member) => (
                     <div key={member.id} className="member-row">
                       <div className="member-avatar">
-                        <span>{(member.user?.display_name ?? member.user?.email ?? "?")[0].toUpperCase()}</span>
+                        <span>{((member.user?.display_name ?? member.user?.email ?? "?")[0] ?? "?").toUpperCase()}</span>
                       </div>
                       <div className="member-info">
                         <span className="member-name">

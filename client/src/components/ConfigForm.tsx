@@ -233,6 +233,7 @@ export default function ConfigForm({ models, keyStatus, onStart, prefill, disabl
           className="btn btn-primary"
           disabled={!canSubmit}
           style={{ gap: 8, paddingRight: 20 }}
+          title={disabled ? "Daily prompt limit reached. Resets at midnight UTC." : undefined}
         >
           Start Agent Session
           <ChevronRight size={15} />
