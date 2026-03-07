@@ -240,7 +240,7 @@ export async function runExtractor(
 export async function* streamCoder(
   modelId: string,
   messages: ChatMessage[],
-  maxTokens = 16384
+  maxTokens = 32768
 ): AsyncGenerator<string> {
   const plan = getModelPlan(modelId);
   yield* cascadeStream(plan.coder, messages, 0.2, maxTokens);

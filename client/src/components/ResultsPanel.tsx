@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { RotateCcw, Download } from "lucide-react";
+import { RotateCcw, Download, AlertTriangle } from "lucide-react";
 import type { SessionResult, OutputLanguage } from "../types";
 import CodePreview from "./CodePreview";
 import SchemaViewer from "./SchemaViewer";
@@ -44,6 +44,34 @@ export default function ResultsPanel({ result, error, codeStream, onReset, langu
           style={{ marginBottom: "var(--space-md)" }}
         >
           <strong>Session failed:</strong> {error}
+        </motion.div>
+      )}
+
+      {/* Truncation warning */}
+      {result?.wasTruncated && (
+        <motion.div
+          className="warning-msg panel truncation-warning"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          style={{ 
+            marginBottom: "var(--space-md)", 
+            background: "rgba(234, 179, 8, 0.1)",
+            border: "1px solid rgba(234, 179, 8, 0.3)",
+            borderRadius: "var(--radius-md)",
+            padding: "var(--space-sm) var(--space-md)",
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-sm)",
+            color: "#eab308",
+            fontSize: "0.85rem",
+          }}
+        >
+          <AlertTriangle size={16} />
+          <span>
+            <strong>Warning:</strong> The generated code may be incomplete. 
+            The model output was truncated before completion. 
+            Try simplifying your request or running again.
+          </span>
         </motion.div>
       )}
 

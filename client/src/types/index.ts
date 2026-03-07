@@ -33,6 +33,7 @@ export interface AgentStep {
     apiFile?: string;
     endpointCount?: number;
     testResult?: string;
+    wasTruncated?: boolean;
   };
 }
 
@@ -68,6 +69,7 @@ export interface SessionResult {
   refinedPrompt: string;
   analysis: string;
   apiFile: string;
+  wasTruncated?: boolean;
 }
 
 export interface DailyUsage {

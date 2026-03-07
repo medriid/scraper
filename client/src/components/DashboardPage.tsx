@@ -94,12 +94,13 @@ export default function DashboardPage({ onGoHome, theme, setTheme }: DashboardPa
       (step) => {
         setSteps((prev) => [...prev, step]);
         if (step.type === "complete" && step.data) {
-          const d = step.data as { schema?: Record<string, unknown>; refinedPrompt?: string; analysis?: string; apiFile?: string };
+          const d = step.data as { schema?: Record<string, unknown>; refinedPrompt?: string; analysis?: string; apiFile?: string; wasTruncated?: boolean };
           setResult({
             schema: d.schema ?? {},
             refinedPrompt: d.refinedPrompt ?? "",
             analysis: d.analysis ?? "",
             apiFile: d.apiFile ?? "",
+            wasTruncated: d.wasTruncated,
           });
         }
       },

@@ -122,6 +122,79 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Detect if generated code appears to be truncated.
+ * Checks for unbalanced brackets/braces - the most reliable indicator of truncation.
+ */
+function isCodeTruncated(code: string): boolean {
+  // Count balanced brackets
+  let braces = 0;
+  let brackets = 0;
+  let parens = 0;
+  let inString = false;
+  let stringChar = "";
+
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i];
+    const prev = code[i - 1] ?? "";
+
+    // Track string state to avoid counting brackets inside strings
+    if ((c === '"' || c === "'" || c === "`") && prev !== "\\") {
+      if (!inString) {
+        inString = true;
+        stringChar = c;
+      } else if (c === stringChar) {
+        inString = false;
+        stringChar = "";
+      }
+    }
+
+    if (!inString) {
+      if (c === "{") braces++;
+      else if (c === "}") braces--;
+      else if (c === "[") brackets++;
+      else if (c === "]") brackets--;
+      else if (c === "(") parens++;
+      else if (c === ")") parens--;
+    }
+  }
+
+  // Code is truncated if brackets are unbalanced
+  if (braces !== 0 || brackets !== 0 || parens !== 0) {
+    return true;
+  }
+
+  // Check for common incomplete patterns
+  const trimmed = code.trim();
+  
+  // Ends with incomplete generic type annotation (Record<, Array<, etc.)
+  if (trimmed.match(/:\s*(Record|Array|Map|Set|Promise)<[^>]*$/)) {
+    return true;
+  }
+
+  // Ends with opening bracket/brace/paren only
+  if (trimmed.match(/[{[(]\s*$/)) {
+    return true;
+  }
+
+  // Ends with colon followed by nothing (incomplete type or object property)
+  if (trimmed.match(/:\s*$/)) {
+    return true;
+  }
+
+  // Ends with equals sign (incomplete assignment)
+  if (trimmed.match(/=\s*$/)) {
+    return true;
+  }
+
+  // Ends with arrow (incomplete arrow function body)
+  if (trimmed.match(/=>\s*$/)) {
+    return true;
+  }
+
+  return false;
+}
+
 // ─── Main Agent Session (SSE streaming) ──────────────────────────────────────
 
 export async function runAgentSession(
@@ -365,19 +438,23 @@ ${baseFile.split("\n").slice(0, 50).join("\n")}
 Write the COMPLETE file now:`;
 
     const streamParts: string[] = [];
+    let streamError: Error | null = null;
 
     emit({ type: "generating", message: `Streaming ${langLabel} code`, detail: "Writing production scraper…" });
 
     try {
-      for await (const chunk of streamCoder(modelId, [{ role: "user", content: buildPrompt }], 16384)) {
+      for await (const chunk of streamCoder(modelId, [{ role: "user", content: buildPrompt }], 32768)) {
         streamParts.push(chunk);
         sendSSE(res, "code_chunk", { chunk });
       }
     } catch (err) {
       console.warn("Stream failed, using base template:", err);
+      streamError = err instanceof Error ? err : new Error(String(err));
     }
 
     let apiFileContent = baseFile;
+    let wasTruncated = false;
+    
     if (streamParts.length > 0) {
       let enhanced = streamParts.join("");
       enhanced = enhanced
@@ -385,6 +462,8 @@ Write the COMPLETE file now:`;
         .replace(/\n?```\s*$/gm, "")
         .trim();
       if (enhanced.length > 500) {
+        // Check for truncation before using the enhanced code
+        wasTruncated = isCodeTruncated(enhanced);
         apiFileContent = enhanced;
       }
     }
@@ -393,15 +472,30 @@ Write the COMPLETE file now:`;
       await updateSession(sessionId, { generated_api_file: apiFileContent });
     }
 
+    // Build appropriate detail message
+    let detailMsg = `${apiFileContent.split("\n").length} lines · ${crawlSummary.pages} pages crawled · ${crawlSummary.apis} APIs discovered`;
+    if (wasTruncated) {
+      detailMsg += " · ⚠️ Code may be incomplete";
+      emit({ 
+        type: "validating", 
+        message: "Warning: Code may be truncated", 
+        detail: "The generated code appears incomplete. Try simplifying your request or regenerating." 
+      });
+    }
+    if (streamError) {
+      detailMsg += " · (used fallback template)";
+    }
+
     emit({
       type: "complete",
       message: `${isDataApi ? "Data API extractor" : "Web scraper"} ready`,
-      detail: `${apiFileContent.split("\n").length} lines · ${crawlSummary.pages} pages crawled · ${crawlSummary.apis} APIs discovered`,
+      detail: detailMsg,
       data: {
         apiFile: apiFileContent,
         schema,
         refinedPrompt,
         analysis,
+        wasTruncated,
       },
     });
 
@@ -531,8 +625,10 @@ export async function runJobInBackground(jobId: string): Promise<void> {
 
     let apiFileContent = baseFile;
     const streamParts: string[] = [];
+    let wasTruncated = false;
+    
     try {
-      for await (const chunk of streamCoder(job.modelId, buildMsg, 16384)) {
+      for await (const chunk of streamCoder(job.modelId, buildMsg, 32768)) {
         streamParts.push(chunk);
         job.codeChunks.push(chunk);
         job.updatedAt = Date.now();
@@ -541,7 +637,10 @@ export async function runJobInBackground(jobId: string): Promise<void> {
         .replace(/^```(?:typescript|ts|python|py)?\s*\n?/gm, "")
         .replace(/\n?```\s*$/gm, "")
         .trim();
-      if (enhanced.length > 500) apiFileContent = enhanced;
+      if (enhanced.length > 500) {
+        wasTruncated = isCodeTruncated(enhanced);
+        apiFileContent = enhanced;
+      }
     } catch (err) {
       console.warn("Job stream failed:", err);
     }
@@ -550,13 +649,28 @@ export async function runJobInBackground(jobId: string): Promise<void> {
       await updateSession(job.sessionId, { generated_api_file: apiFileContent });
     }
 
+    // Add truncation warning if detected
+    if (wasTruncated) {
+      pushStep({
+        type: "validating",
+        message: "Warning: Code may be truncated",
+        detail: "The generated code appears incomplete. Try simplifying your request or regenerating.",
+      });
+    }
+
     job.result = { schema: schema as Record<string, unknown>, refinedPrompt, analysis, apiFile: apiFileContent };
     setStatus("completed", 100);
+    
+    let detailMsg = `${apiFileContent.split("\n").length} lines`;
+    if (wasTruncated) {
+      detailMsg += " · ⚠️ Code may be incomplete";
+    }
+    
     pushStep({
       type: "complete",
       message: "Scraper ready",
-      detail: `${apiFileContent.split("\n").length} lines`,
-      data: { apiFile: apiFileContent, schema, refinedPrompt, analysis },
+      detail: detailMsg,
+      data: { apiFile: apiFileContent, schema, refinedPrompt, analysis, wasTruncated },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown";
