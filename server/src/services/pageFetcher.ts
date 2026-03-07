@@ -646,3 +646,384 @@ export function buildPageReport(page: FetchedPage): string {
 
   return lines.join("\n");
 }
+
+// ─── Bot Crawl: Deep Playwright exploration ──────────────────────────────────
+
+export interface CrawledPageReport {
+  url: string;
+  title: string;
+  contentSelectors: SelectorInfo[];
+  linkPatterns: string[];
+  interceptedApis: ProbedEndpoint[];
+  sampleTexts: Record<string, string>;
+  htmlSnippet: string;
+}
+
+export interface SelectorInfo {
+  selector: string;
+  count: number;
+  sampleText: string;
+  sampleHref?: string;
+  sampleSrc?: string;
+  tagName: string;
+}
+
+export interface BotCrawlResult {
+  pages: CrawledPageReport[];
+  allInterceptedApis: ProbedEndpoint[];
+  discoveredDetailUrls: string[];
+  siteStructure: string;
+}
+
+export async function crawlSiteForDiscovery(
+  startUrl: string,
+  linkUrls: string[],
+  maxPages: number = 3
+): Promise<BotCrawlResult> {
+  let browser: Browser | null = null;
+  const pages: CrawledPageReport[] = [];
+  const allInterceptedApis: ProbedEndpoint[] = [];
+  const discoveredDetailUrls: string[] = [];
+  const visited = new Set<string>();
+
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    });
+    const context = await browser.newContext({
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      viewport: { width: 1280, height: 900 },
+    });
+    const page = await context.newPage();
+
+    page.on("response", async (response) => {
+      const url = response.url();
+      const ct = response.headers()["content-type"] ?? "";
+      const status = response.status();
+      if (
+        ct.includes("application/json") &&
+        !url.includes("analytics") &&
+        !url.includes("tracking") &&
+        !url.includes("telemetry") &&
+        status >= 200 &&
+        status < 400
+      ) {
+        try {
+          const text = await response.text();
+          allInterceptedApis.push({
+            url,
+            method: response.request().method(),
+            statusCode: status,
+            contentType: ct,
+            sampleData: text.slice(0, 3000),
+            isJsonApi: true,
+          });
+        } catch {}
+      }
+    });
+
+    const urlsToVisit = [startUrl];
+    const parsed = new URL(startUrl);
+    const baseDomain = parsed.hostname;
+
+    for (const link of linkUrls.slice(0, 20)) {
+      try {
+        const resolved = new URL(link, startUrl).href;
+        if (new URL(resolved).hostname === baseDomain && !urlsToVisit.includes(resolved)) {
+          urlsToVisit.push(resolved);
+        }
+      } catch {}
+    }
+
+    for (const url of urlsToVisit.slice(0, maxPages)) {
+      if (visited.has(url)) continue;
+      visited.add(url);
+
+      try {
+        await page.goto(url, { waitUntil: "networkidle", timeout: 25_000 });
+        await page.waitForTimeout(1500);
+
+        const crawledPage = await page.evaluate((currentUrl: string) => {
+          const title = document.title || "";
+
+          const contentSelectors: Array<{
+            selector: string;
+            count: number;
+            sampleText: string;
+            sampleHref?: string;
+            sampleSrc?: string;
+            tagName: string;
+          }> = [];
+
+          const candidateSelectors = [
+            "article", "[class*='card']", "[class*='item']", "[class*='product']",
+            "[class*='comic']", "[class*='manga']", "[class*='anime']", "[class*='movie']",
+            "[class*='listing']", "[class*='entry']", "[class*='post']", "[class*='result']",
+            "[class*='book']", "[class*='series']", "[class*='show']", "[class*='game']",
+            "h1", "h2", "h3",
+            "[class*='title']", "[class*='name']",
+            "[class*='description']", "[class*='summary']",
+            "[class*='genre']", "[class*='tag']", "[class*='category']",
+            "[class*='rating']", "[class*='score']",
+            "[class*='price']", "[class*='cost']",
+            "[class*='author']", "[class*='creator']", "[class*='artist']",
+            "[class*='chapter']", "[class*='episode']",
+            "[class*='status']",
+            "[class*='cover'] img", "[class*='thumb'] img", "[class*='poster'] img",
+            "img[src]",
+            "a[href]",
+            "[class*='pagination']", "[class*='pager']", "a[rel='next']",
+            "[data-id]", "[data-slug]", "[data-page]",
+          ];
+
+          for (const sel of candidateSelectors) {
+            try {
+              const els = document.querySelectorAll(sel);
+              if (els.length > 0) {
+                const first = els[0];
+                const info: {
+                  selector: string;
+                  count: number;
+                  sampleText: string;
+                  sampleHref?: string;
+                  sampleSrc?: string;
+                  tagName: string;
+                } = {
+                  selector: sel,
+                  count: els.length,
+                  sampleText: (first.textContent || "").trim().slice(0, 200),
+                  tagName: first.tagName.toLowerCase(),
+                };
+                if (first instanceof HTMLAnchorElement && first.href) {
+                  info.sampleHref = first.href;
+                }
+                if (first instanceof HTMLImageElement && (first.src || first.dataset.src)) {
+                  info.sampleSrc = first.src || first.dataset.src || "";
+                }
+                contentSelectors.push(info);
+              }
+            } catch {}
+          }
+
+          const detailLinks: string[] = [];
+          const linkSelectors = [
+            "article a[href]", "[class*='card'] a[href]", "[class*='item'] a[href]",
+            "[class*='title'] a[href]", "h2 a[href]", "h3 a[href]",
+            "[class*='comic'] a[href]", "[class*='manga'] a[href]",
+            "[class*='entry'] a[href]", "[class*='post'] a[href]",
+          ];
+          for (const sel of linkSelectors) {
+            try {
+              const els = document.querySelectorAll(sel);
+              els.forEach((el) => {
+                const href = (el as HTMLAnchorElement).href;
+                if (href && !href.startsWith("javascript:") && !href.startsWith("#") && !href.startsWith("mailto:")) {
+                  detailLinks.push(href);
+                }
+              });
+              if (detailLinks.length > 0) break;
+            } catch {}
+          }
+
+          const sampleTexts: Record<string, string> = {};
+          const textSelectors: Record<string, string[]> = {
+            title: ["h1", "h2", "[class*='title']", "[itemprop='name']"],
+            description: ["[class*='description']", "[class*='summary']", "[itemprop='description']", "meta[name='description']"],
+            genre: ["[class*='genre']", "[class*='tag']", "[class*='category']"],
+            rating: ["[class*='rating']", "[class*='score']", "[itemprop='ratingValue']"],
+            author: ["[class*='author']", "[class*='creator']", "[itemprop='author']"],
+            price: ["[class*='price']", "[itemprop='price']"],
+            status: ["[class*='status']"],
+          };
+          for (const [field, sels] of Object.entries(textSelectors)) {
+            for (const sel of sels) {
+              try {
+                const el = document.querySelector(sel);
+                if (el) {
+                  const text = (sel.startsWith("meta") ? el.getAttribute("content") : el.textContent) || "";
+                  if (text.trim()) {
+                    sampleTexts[field] = text.trim().slice(0, 300);
+                    break;
+                  }
+                }
+              } catch {}
+            }
+          }
+
+          const bodySnippet = document.body.innerHTML.slice(0, 15000);
+
+          return {
+            url: currentUrl,
+            title,
+            contentSelectors,
+            linkPatterns: [...new Set(detailLinks)].slice(0, 30),
+            sampleTexts,
+            htmlSnippet: bodySnippet,
+          };
+        }, url);
+
+        pages.push({
+          ...crawledPage,
+          interceptedApis: [...allInterceptedApis],
+        });
+
+        for (const link of crawledPage.linkPatterns) {
+          if (!visited.has(link) && !discoveredDetailUrls.includes(link)) {
+            discoveredDetailUrls.push(link);
+          }
+        }
+
+        if (pages.length === 1 && discoveredDetailUrls.length > 0) {
+          const detailUrl = discoveredDetailUrls[0];
+          if (!visited.has(detailUrl)) {
+            visited.add(detailUrl);
+            try {
+              await page.goto(detailUrl, { waitUntil: "networkidle", timeout: 25_000 });
+              await page.waitForTimeout(1500);
+
+              const detailPage = await page.evaluate((currentUrl: string) => {
+                const title = document.title || "";
+                const contentSelectors: Array<{
+                  selector: string; count: number; sampleText: string;
+                  sampleHref?: string; sampleSrc?: string; tagName: string;
+                }> = [];
+
+                const selectors = [
+                  "h1", "h2", "h3",
+                  "[class*='title']", "[class*='name']",
+                  "[class*='description']", "[class*='summary']", "[class*='synopsis']",
+                  "[class*='genre']", "[class*='tag']", "[class*='category']",
+                  "[class*='rating']", "[class*='score']",
+                  "[class*='author']", "[class*='creator']", "[class*='artist']",
+                  "[class*='chapter']", "[class*='episode']",
+                  "[class*='status']", "[class*='state']",
+                  "[class*='cover'] img", "[class*='thumb'] img", "[class*='poster'] img",
+                  "[class*='detail']", "[class*='info']",
+                  "[itemprop]",
+                  "img[src]",
+                  "[data-id]", "[data-slug]",
+                ];
+
+                for (const sel of selectors) {
+                  try {
+                    const els = document.querySelectorAll(sel);
+                    if (els.length > 0) {
+                      const first = els[0];
+                      const info: {
+                        selector: string; count: number; sampleText: string;
+                        sampleHref?: string; sampleSrc?: string; tagName: string;
+                      } = {
+                        selector: sel,
+                        count: els.length,
+                        sampleText: (first.textContent || "").trim().slice(0, 200),
+                        tagName: first.tagName.toLowerCase(),
+                      };
+                      if (first instanceof HTMLImageElement && (first.src || first.dataset.src)) {
+                        info.sampleSrc = first.src || first.dataset.src || "";
+                      }
+                      contentSelectors.push(info);
+                    }
+                  } catch {}
+                }
+
+                const sampleTexts: Record<string, string> = {};
+                const textSelectors: Record<string, string[]> = {
+                  title: ["h1", "[class*='title']", "[itemprop='name']"],
+                  description: ["[class*='description']", "[class*='summary']", "[class*='synopsis']", "[itemprop='description']"],
+                  genre: ["[class*='genre'] a", "[class*='tag'] a", "[class*='category'] a"],
+                  rating: ["[class*='rating']", "[class*='score']", "[itemprop='ratingValue']"],
+                  author: ["[class*='author']", "[class*='creator']", "[itemprop='author']"],
+                  status: ["[class*='status']"],
+                  chapter: ["[class*='chapter']", "[class*='episode']"],
+                };
+                for (const [field, sels] of Object.entries(textSelectors)) {
+                  for (const sel of sels) {
+                    try {
+                      const el = document.querySelector(sel);
+                      if (el && el.textContent?.trim()) {
+                        sampleTexts[field] = el.textContent.trim().slice(0, 300);
+                        break;
+                      }
+                    } catch {}
+                  }
+                }
+
+                return {
+                  url: currentUrl,
+                  title,
+                  contentSelectors,
+                  linkPatterns: [] as string[],
+                  sampleTexts,
+                  htmlSnippet: document.body.innerHTML.slice(0, 15000),
+                };
+              }, detailUrl);
+
+              pages.push({
+                ...detailPage,
+                interceptedApis: [],
+              });
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    await browser.close();
+    browser = null;
+  } finally {
+    if (browser) {
+      try { await browser.close(); } catch {}
+    }
+  }
+
+  const structureLines: string[] = [];
+  for (const p of pages) {
+    structureLines.push(`\n=== PAGE: ${p.url} ===`);
+    structureLines.push(`Title: ${p.title}`);
+
+    if (Object.keys(p.sampleTexts).length > 0) {
+      structureLines.push(`\nSample data found on page:`);
+      for (const [field, text] of Object.entries(p.sampleTexts)) {
+        structureLines.push(`  ${field}: "${text}"`);
+      }
+    }
+
+    const meaningfulSelectors = p.contentSelectors.filter(
+      (s) => s.count > 0 && (s.sampleText || s.sampleHref || s.sampleSrc)
+    );
+    if (meaningfulSelectors.length > 0) {
+      structureLines.push(`\nCSS selectors with data (${meaningfulSelectors.length}):`);
+      for (const s of meaningfulSelectors.slice(0, 30)) {
+        let line = `  "${s.selector}" → ${s.count} element(s), tag: <${s.tagName}>`;
+        if (s.sampleText) line += `, text: "${s.sampleText.slice(0, 100)}"`;
+        if (s.sampleHref) line += `, href: "${s.sampleHref}"`;
+        if (s.sampleSrc) line += `, src: "${s.sampleSrc}"`;
+        structureLines.push(line);
+      }
+    }
+
+    if (p.linkPatterns.length > 0) {
+      structureLines.push(`\nDetail links found (${p.linkPatterns.length}):`);
+      for (const link of p.linkPatterns.slice(0, 10)) {
+        structureLines.push(`  ${link}`);
+      }
+    }
+  }
+
+  if (allInterceptedApis.length > 0) {
+    structureLines.push(`\n=== INTERCEPTED API CALLS DURING CRAWL (${allInterceptedApis.length}) ===`);
+    for (const api of allInterceptedApis.slice(0, 10)) {
+      structureLines.push(`[${api.method}] ${api.url} → ${api.statusCode}`);
+      structureLines.push(`  Sample: ${api.sampleData.slice(0, 500)}`);
+    }
+  }
+
+  return {
+    pages,
+    allInterceptedApis,
+    discoveredDetailUrls,
+    siteStructure: structureLines.join("\n"),
+  };
+}
