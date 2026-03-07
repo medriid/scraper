@@ -110,6 +110,17 @@ interface PlaywrightFetchResult {
   interceptedApis: ProbedEndpoint[];
 }
 
+function isBrowserNotInstalled(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return (
+    msg.includes("executable doesn't exist") ||
+    msg.includes("executable does not exist") ||
+    msg.includes("no such file") ||
+    (msg.includes("executable") && msg.includes("playwright"))
+  );
+}
+
 async function doPlaywrightFetch(targetUrl: string): Promise<PlaywrightFetchResult> {
   let browser: Browser | null = null;
   try {
@@ -178,6 +189,12 @@ async function doPlaywrightFetch(targetUrl: string): Promise<PlaywrightFetchResu
       body: body.slice(0, MAX_HTML_SIZE),
       interceptedApis,
     };
+  } catch (err) {
+    if (isBrowserNotInstalled(err)) {
+      console.warn("[pageFetcher] Playwright browser not installed — skipping browser fetch");
+      throw err; // propagate so the caller falls back to HTTP
+    }
+    throw err;
   } finally {
     if (browser) {
       try { await browser.close(); } catch {}
@@ -858,6 +875,15 @@ export async function crawlSiteForDiscovery(
       headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
     });
+  } catch (launchErr) {
+    if (isBrowserNotInstalled(launchErr)) {
+      console.warn("[pageFetcher] Playwright browser not installed — crawlSiteForDiscovery returning empty result");
+      return { pages: [], discoveredDetailUrls: [], siteStructure: "", allInterceptedApis: [] };
+    }
+    throw launchErr;
+  }
+
+  try {
     const context = await browser.newContext({
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
