@@ -374,61 +374,89 @@ RULES:
         ? generateApiFileTemplate(websiteUrl, schema, instructions)
         : generatePyFileTemplate(websiteUrl, schema, instructions));
 
-    const enhancePrompt = `You are a senior ${langLabel} developer. Write a complete, production-ready ${langLabel} script that extracts data from the target website.
+    const TEMPLATE_PREVIEW_LINES = 60;
+    const enhancePrompt = `You are a senior ${langLabel} web scraping engineer. Write a complete, production-ready ${langLabel} script that extracts structured data from the target website.
 
-CRITICAL RULES:
-- Do NOT include any comments in the code. Zero comments, zero docstrings.
-- Do NOT wrap the output in markdown fences. Return ONLY raw source code.
-- The script must do all fetching itself — the user just runs it.
-- EVERY URL, selector, endpoint, and field name MUST come from the REAL page data below. Do NOT invent or assume anything.
+OUTPUT RULES:
+- Return ONLY raw ${langLabel} source code. No markdown fences, no explanation, no comments, no docstrings.
+- The script must be fully self-contained — the user just runs it.
 
-MODE: ${isDataApi ? "DATA API — Authenticated user data extraction" : "SCRAPER — Public data extraction"}
+=== TARGET WEBSITE ===
+URL: ${websiteUrl}
+User instructions: ${instructions}
+Mode: ${isDataApi ? "DATA API (authenticated)" : "SCRAPER (public data)"}
+Output schema: ${JSON.stringify(schema, null, 2)}
 
-STRATEGY (based on what was ACTUALLY found on the page):
-${endpointCount > 0 ? `1. API ENDPOINTS FOUND (${endpointCount}): Call these directly using ${isTs ? "fetch()" : "httpx/requests"}. This is the primary approach.
-Discovered endpoints:
-${discoveredEndpointsText}` : "1. NO API ENDPOINTS FOUND: Use Playwright for browser-based extraction."}
-${inlineDataText ? `\n2. INLINE DATA FOUND: The page contains embedded JSON data that can be extracted:\n${inlineDataText.slice(0, 2000)}` : ""}
-${!endpointCount && !inlineDataText ? `\n2. HTML EXTRACTION: Use the actual HTML structure below for selectors.\n` : ""}
+=== DISCOVERED API ENDPOINTS (${endpointCount}) ===
+${discoveredEndpointsText || "None discovered — use browser-based HTML extraction with Playwright."}
 
-REAL PAGE DATA:
-- URL: ${websiteUrl}
-- Title: ${fetchedHtmlSnippet ? fetchedHtmlSnippet.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "Unknown" : "Unknown"}
-- Data schema: ${JSON.stringify(schema, null, 2)}
+=== INLINE JSON DATA ===
+${inlineDataText ? inlineDataText.slice(0, 3000) : "None found."}
 
-REAL HTML (first 10000 chars):
-${fetchedHtmlSnippet.slice(0, 10000)}
+=== REAL HTML STRUCTURE ===
+${fetchedHtmlSnippet.slice(0, 12000)}
 
-TECHNICAL SPECIFICATION:
+=== TECHNICAL SPECIFICATION ===
 ${refinedPrompt.slice(0, 3000)}
 
-${isDataApi ? `AUTHENTICATION:
-The user will provide credentials. The script should:
-1. Authenticate using the site's actual auth endpoint(s) found above
-2. Store the session/token
-3. Use it for subsequent data requests
-${credentials?.email ? `User email format available` : ""}${credentials?.token ? `, API token/key available` : ""}${credentials?.cookies ? `, Session cookies available` : ""}
-` : ""}
-
-TEST VALIDATION (the approach was tested with this snippet):
+=== VALIDATION TEST ===
 ${cleanTest.slice(0, 1500)}
 
-BASE TEMPLATE TO ENHANCE:
+${isDataApi ? `=== AUTHENTICATION ===
+Credentials available: ${credentials?.email ? "email" : ""}${credentials?.password ? ", password" : ""}${credentials?.token ? ", API token" : ""}${credentials?.cookies ? ", cookies" : ""}
+Use the actual auth endpoints discovered above to authenticate, then extract per-user data.
+` : ""}
+
+=== MANDATORY IMPLEMENTATION REQUIREMENTS ===
+
+1. DATA DISCOVERY STRATEGY (choose based on what was found above):
+   ${endpointCount > 0 ? `API endpoints WERE found — call them directly with ${isTs ? "fetch() or Playwright request interception" : "requests/httpx or Playwright request interception"}. Use the EXACT endpoint URLs discovered above.` : "No API endpoints found — use Playwright to render the page and extract from the DOM."}
+   ${inlineDataText ? "Inline JSON/state data WAS found — extract it from script tags or window.__STATE__ objects." : ""}
+
+2. PAGE NAVIGATION & DETAIL EXTRACTION:
+   - First load the listing/index page at ${websiteUrl}
+   - Extract all item links from the listing page (look at the REAL HTML above for link patterns)
+   - Navigate to EACH item's detail page to extract complete data
+   - Use the actual CSS selectors visible in the HTML above — NOT generic guesses like [class*='card']
+   - Look at the real class names, IDs, data attributes in the HTML snippet above
+
+3. ROBUST ERROR HANDLING:
+   - Wrap ALL selector operations in try/catch blocks
+   - Implement a safeExtract() helper that tries multiple fallback selectors
+   - Add retry logic with exponential backoff for page loads
+   - Handle missing elements gracefully (return empty string, not crash)
+   - Log errors but continue scraping
+
+4. COMPLETE DATA FIELDS — every schema field MUST be populated:
+   - For ID fields (e.g. comicId, chapterId): generate from URL hash if not found in DOM
+   - For "provider"/"source" fields: set to the website hostname
+   - For "url"/"link" fields: use the current page URL
+   - For date fields (createdAt, lastUpdated): extract from page or use current timestamp
+   - For array fields (genres, tags, images): use dedicated extraction with proper selectors
+   - For image arrays: collect ALL img[src] and [data-src] from the detail page
+
+5. PAGINATION:
+   - Find the real "next page" link using multiple selector patterns from the actual HTML
+   - Respect CONFIG.maxPages limit
+   - Add delay between page loads
+
+6. FILE OUTPUT:
+   - Save results to output-YYYY-MM-DD.json using ${isTs ? "fs.writeFileSync" : "json.dump to a file"}
+   - Also print to stdout as formatted JSON
+
+7. CODE QUALITY:
+   - ${isTs ? "Use strict TypeScript types — explicit type annotations on ALL function parameters and callbacks (e.g. Element[], string[], etc.)" : "Use Python type hints throughout"}
+   - ${isTs ? "import * as fs from 'fs' for file output" : "import json, time, hashlib, datetime for utilities"}
+   - Clean class-based structure with init(), scrape(), close()
+   - No comments anywhere in the code
+
+REFERENCE TEMPLATE (use as structural guide, but replace ALL generic selectors with real ones from the HTML above):
 \`\`\`${isTs ? "typescript" : "python"}
-${baseFile}
+${baseFile.split("\n").slice(0, TEMPLATE_PREVIEW_LINES).join("\n")}
+... (template continues with safeExtract, extractImages, extractGenres, fillMissingFields, file output)
 \`\`\`
 
-Requirements:
-1. Use REAL selectors, endpoints, and field names from the actual page data — not generic guesses
-2. Implement the correct strategy based on what was actually found (API-first if endpoints exist)
-3. Implement proper pagination based on real pagination patterns found
-4. Add retry logic with exponential backoff
-5. Add configurable delay between requests (default 1-2 seconds)
-6. ${isTs ? "Add full TypeScript types matching the schema" : "Add dataclass/TypedDict matching the schema"}
-7. Output extracted data as formatted JSON to stdout
-8. ABSOLUTELY NO COMMENTS anywhere in the code
-
-Return ONLY the complete ${langLabel} source code.`;
+Write the COMPLETE ${langLabel} file now. Use REAL selectors from the HTML above.`;
 
     let apiFileContent = baseFile;
     const streamParts: string[] = [];
@@ -444,14 +472,22 @@ Return ONLY the complete ${langLabel} source code.`;
         modelId,
         [{ role: "user", content: enhancePrompt }],
         0.2,
-        8192
+        16384
       )) {
         streamParts.push(chunk);
         sendSSE(res, "code_chunk", { chunk });
       }
-      const enhanced = streamParts.join("");
+      let enhanced = streamParts.join("");
       if (enhanced.length > 500) {
-        apiFileContent = enhanced.replace(/^```(?:typescript|ts|python|py)?\n?/m, "").replace(/\n?```$/m, "");
+        const OPENING_FENCE = /^```(?:typescript|ts|python|py|javascript|js)?\s*\n?/gm;
+        const CLOSING_FENCE = /\n?```\s*$/gm;
+        enhanced = enhanced
+          .replace(OPENING_FENCE, "")
+          .replace(CLOSING_FENCE, "")
+          .trim();
+        if (enhanced.length > 500) {
+          apiFileContent = enhanced;
+        }
       }
     } catch (err) {
       console.warn("Stream failed, using base template:", err);

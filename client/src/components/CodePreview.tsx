@@ -55,6 +55,8 @@ export default function CodePreview({
 
   const lineCount = code.split("\n").length;
 
+  const lang = filename.endsWith(".py") ? "python" : "typescript";
+
   return (
     <div className="code-stream-wrapper">
       <div className="code-stream-header">
@@ -88,7 +90,7 @@ export default function CodePreview({
         style={{ maxHeight }}
       >
         <SyntaxHighlighter
-          language="typescript"
+          language={lang}
           style={monoStyle}
           showLineNumbers
           lineNumberStyle={{
@@ -99,7 +101,7 @@ export default function CodePreview({
           }}
           wrapLongLines={false}
         >
-          {code || "// Waiting for AI…"}
+          {code || (lang === "python" ? "# Waiting for AI…" : "// Waiting for AI…")}
         </SyntaxHighlighter>
         {streaming && <span className="code-cursor" />}
       </div>
