@@ -158,6 +158,11 @@ code, pre { font-family: var(--font-mono); }
   50% { opacity: 0.3; }
 }
 
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 /* ─── Main ────────────────────────────────────────────────────────────────── */
 .main {
   flex: 1;

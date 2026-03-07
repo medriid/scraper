@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type { AgentStep, SessionConfig, SessionPhase } from "../types";
 import CodePreview from "./CodePreview";
+import RotatingCube from "./RotatingCube";
 
 interface Props {
   config: SessionConfig;
@@ -155,12 +156,7 @@ export default function AgentSession({ config, steps, codeStream, phase, onCance
             style={{ borderStyle: "dashed" }}
           >
             <div className="step-icon-wrap">
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ duration: 1.2, repeat: Infinity, ease: "linear" }}
-              >
-                <Brain size={14} style={{ color: "var(--text-3)" }} />
-              </motion.div>
+              <RotatingCube size={14} />
             </div>
             <div className="step-body">
               <div className="step-type-label">working</div>
