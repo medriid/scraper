@@ -13,7 +13,10 @@ import SessionHistory from "./components/SessionHistory";
 import LandingPage from "./components/LandingPage";
 import AuthModal from "./components/AuthModal";
 import ScrapexLogo from "./components/icons/ScrapexLogo";
+import DbStatusBadge from "./components/DbStatusBadge";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
+
+const SHOW_DB_STATUS = import.meta.env.VITE_SHOW_DB_STATUS === "true";
 
 type AppStep = "config" | "running" | "results";
 type AppView = "landing" | "app";
@@ -181,6 +184,7 @@ function AppContent() {
                   {profile?.is_owner && <span className="owner-badge">owner</span>}
                 </div>
               )}
+              {SHOW_DB_STATUS && <DbStatusBadge />}
               <div className="header-status">
                 <span
                   className={`status-dot ${keyStatus.gemini > 0 || keyStatus.openrouter > 0 || keyStatus.groq > 0 ? "online" : ""}`}
@@ -318,7 +322,7 @@ function AppContent() {
       {/* Footer */}
       <footer className="footer">
         <div className="container">
-          <p>Scrapex — Agentic Web Extraction · Heroku + Supabase + Gemini + OpenRouter</p>
+          <p>Scrapex · Heroku + Supabase + Gemini + OpenRouter</p>
         </div>
       </footer>
     </div>

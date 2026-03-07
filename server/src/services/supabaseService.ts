@@ -2,7 +2,11 @@ import { createClient } from "@supabase/supabase-js";
 
 function getSupabaseClient() {
   const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY;
+  // Support both the legacy SUPABASE_ANON_KEY and the newer SUPABASE_PUBLISHABLE_KEY name
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ??
+    process.env.SUPABASE_PUBLISHABLE_KEY ??
+    process.env.SUPABASE_ANON_KEY;
   if (!url || !key) return null;
   return createClient(url, key);
 }
@@ -59,7 +63,10 @@ export async function upsertUserProfile(profile: Omit<UserProfile, "is_owner" | 
 
 export async function verifyUserToken(token: string): Promise<{ userId: string; email: string } | null> {
   const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY;
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ??
+    process.env.SUPABASE_PUBLISHABLE_KEY ??
+    process.env.SUPABASE_ANON_KEY;
   if (!url || !key) return null;
 
   const client = createClient(url, key);
@@ -161,4 +168,24 @@ export async function listSessions(limit = 20, userId?: string): Promise<Scraper
     return [];
   }
   return data ?? [];
+}
+
+export async function checkDatabaseConnection(): Promise<{ connected: boolean; latencyMs?: number; message?: string }> {
+  const client = getSupabaseClient();
+  if (!client) {
+    return { connected: false, message: "Supabase not configured (missing SUPABASE_URL or key)" };
+  }
+
+  const start = Date.now();
+  try {
+    const { error } = await client.from("scraper_sessions").select("id").limit(1);
+    const latencyMs = Date.now() - start;
+    if (error) {
+      return { connected: false, latencyMs, message: error.message };
+    }
+    return { connected: true, latencyMs };
+  } catch (err: unknown) {
+    const latencyMs = Date.now() - start;
+    return { connected: false, latencyMs, message: String(err) };
+  }
 }

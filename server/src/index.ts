@@ -7,6 +7,7 @@ import path from "path";
 import scraperRouter from "./routes/scraper.js";
 import modelsRouter from "./routes/models.js";
 import authRouter from "./routes/auth.js";
+import { checkDatabaseConnection } from "./services/supabaseService.js";
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? "3001", 10);
@@ -75,6 +76,11 @@ app.use("/api/auth", authRouter);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", ts: new Date().toISOString() });
+});
+
+app.get("/api/db-status", async (_req, res) => {
+  const result = await checkDatabaseConnection();
+  res.status(result.connected ? 200 : 503).json(result);
 });
 
 // ─── Serve built client in production ────────────────────────────────────────
